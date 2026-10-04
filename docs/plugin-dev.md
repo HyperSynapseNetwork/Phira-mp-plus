@@ -318,7 +318,7 @@ PMP 插件状态机：`加载 → 验证 → 启用 → 运行 → 禁用 → �
 | `tcp` | 发起 TCP 连接 |
 | `max_concurrent_calls` | 并发 API 调用数（默认 1） |
 
-缺省授予 `default_capabilities` 集合（`state.read`、`send`、`ext`、`config`、`http`、`room.manage`、`admin`、`crypto`、`timer`、`tcp`、`room-state` 等）——manifest 声明的能力用于显式覆盖/收紧。**动态**能力请求（`request-capability`）默认拒绝。
+缺省仅授予 `default_capabilities` 的低权限集合（`state.read`、`send`、`ext`、`config`、`timer`、`room-state`）。HTTP、TCP、文件、加密、handler、插件调用、房间管理和管理员能力必须由 manifest 显式授予。**动态**能力请求（`request-capability`）默认拒绝。
 
 ### 构建与部署
 

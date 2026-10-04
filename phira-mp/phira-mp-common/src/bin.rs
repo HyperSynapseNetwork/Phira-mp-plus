@@ -32,8 +32,12 @@ impl<'a> BinaryReader<'a> {
     }
 
     pub fn take(&mut self, n: usize) -> Result<&'a [u8]> {
+        let end = self
+            .1
+            .checked_add(n)
+            .ok_or_else(|| anyhow!("binary length overflow"))?;
         self.0
-            .get(self.1..(self.1 + n))
+            .get(self.1..end)
             .ok_or_else(|| anyhow!("unexpected EOF"))
             .tap_ok(|_| self.1 += n)
     }
@@ -46,6 +50,9 @@ impl<'a> BinaryReader<'a> {
         let mut result = 0;
         let mut shift = 0;
         loop {
+            if shift >= 64 {
+                return Err(anyhow!("ULEB128 value is too large"));
+            }
             let byte = self.read::<u8>()?;
             result |= ((byte & 0x7f) as u64) << shift;
             if byte & 0x80 == 0 {

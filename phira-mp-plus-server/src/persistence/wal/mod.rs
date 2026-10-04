@@ -19,10 +19,10 @@
 
 mod marker;
 
-use std::collections::HashSet;
-use serde::{Deserialize, Serialize};
 use crate::persistence::message::PersistenceEvent;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::AsyncWriteExt;
@@ -191,7 +191,7 @@ impl PersistenceWal {
         for component in path.components() {
             match component {
                 Component::Normal(_) => components.push(component),
-                Component::CurDir => {}  // skip standalone "."
+                Component::CurDir => {} // skip standalone "."
                 Component::ParentDir => {
                     if !components.as_os_str().is_empty() {
                         components.pop();
@@ -249,10 +249,18 @@ impl PersistenceWal {
     pub fn degraded_reasons(&self) -> Vec<&'static str> {
         let mask = self.degraded.load(Ordering::Acquire);
         let mut out = Vec::new();
-        if mask & DEGRADED_ACK != 0 { out.push("ack"); }
-        if mask & DEGRADED_CORRUPTION != 0 { out.push("corruption"); }
-        if mask & DEGRADED_MARKER != 0 { out.push("marker"); }
-        if mask & DEGRADED_COMPACT != 0 { out.push("compact"); }
+        if mask & DEGRADED_ACK != 0 {
+            out.push("ack");
+        }
+        if mask & DEGRADED_CORRUPTION != 0 {
+            out.push("corruption");
+        }
+        if mask & DEGRADED_MARKER != 0 {
+            out.push("marker");
+        }
+        if mask & DEGRADED_COMPACT != 0 {
+            out.push("compact");
+        }
         out
     }
 
@@ -399,11 +407,14 @@ impl PersistenceWal {
             .len();
 
         let write_result = async {
-            file.write_all(&line).await
+            file.write_all(&line)
+                .await
                 .map_err(|e| format!("append WAL {}: {e}", self.path.display()))?;
-            file.flush().await
+            file.flush()
+                .await
                 .map_err(|e| format!("flush WAL {}: {e}", self.path.display()))?;
-            file.sync_data().await
+            file.sync_data()
+                .await
                 .map_err(|e| format!("sync WAL {}: {e}", self.path.display()))?;
             Ok::<(), String>(())
         }
@@ -472,11 +483,7 @@ impl PersistenceWal {
         // moves the tail, so [original_len, EOF) is exactly what this append
         // attempt wrote.
         let tail = match async {
-            let cur_len = file
-                .metadata()
-                .await
-                .map_err(|e| e.to_string())?
-                .len();
+            let cur_len = file.metadata().await.map_err(|e| e.to_string())?.len();
             if cur_len < original_len {
                 return Err(
                     "WAL is shorter than the pre-append length; the tail cannot be classified"
@@ -487,7 +494,9 @@ impl PersistenceWal {
                 .await
                 .map_err(|e| e.to_string())?;
             let mut buf = Vec::new();
-            file.read_to_end(&mut buf).await.map_err(|e| e.to_string())?;
+            file.read_to_end(&mut buf)
+                .await
+                .map_err(|e| e.to_string())?;
             Ok::<Vec<u8>, String>(buf)
         }
         .await
@@ -676,7 +685,11 @@ impl PersistenceWal {
         // unchanged on failure — the next admission retries the same sequence.
         let _guard = self.io_gate.lock().await;
         let seq = self.admit_sequence.load(Ordering::Acquire) + 1;
-        let frame = WalFrame::new(WalRecord::Admission { id, event, sequence: seq })?;
+        let frame = WalFrame::new(WalRecord::Admission {
+            id,
+            event,
+            sequence: seq,
+        })?;
         match self.append_frame_inner(&frame).await {
             Ok(AppendOutcome::AdmittedDegraded) => {
                 // P0-B: the frame is fully present and was re-synced — the
@@ -837,14 +850,9 @@ impl PersistenceWal {
             }
         }
 
-        // A hard kill (SIGKILL, crash, power loss) can tear the FINAL frame
-        // mid-append.  It shows up in two physical forms:
-        //   1. a partial frame with no trailing newline (below), or
-        //   2. a complete line ending in '\n' whose body is corrupt — parse or
-        //      checksum failure — because the delimiter flushed but the frame
-        //      body did not (PMP47).
-        // Both are auto-cleaned at the tail; corruption in any EARLIER line —
-        // or in a WAL with no intact prefix — still fails replay closed.
+        // A hard kill can leave an incomplete final JSON line. Only syntactic
+        // truncation is auto-cleaned; a complete frame with a bad checksum is
+        // treated as corruption even when it is the final line.
         if bytes.last().map(|&b| b != b'\n').unwrap_or(false) {
             // If the last byte was not a newline, the final segment may be an
             // incomplete write OR a complete frame whose trailing newline was
@@ -853,15 +861,30 @@ impl PersistenceWal {
             if let Some(last) = lines.pop() {
                 if !last.is_empty() {
                     match serde_json::from_slice::<WalFrame>(last) {
-                        Ok(frame) if frame.verify().is_ok() && frame.ver <= WAL_FORMAT_VERSION => {
+                        Ok(frame) => {
+                            if frame.ver > WAL_FORMAT_VERSION {
+                                self.mark_degraded(DEGRADED_CORRUPTION);
+                                return Err(format!(
+                                    "WAL {} final frame uses unsupported format version {}",
+                                    self.path.display(),
+                                    frame.ver
+                                ));
+                            }
+                            if let Err(error) = frame.verify() {
+                                self.mark_degraded(DEGRADED_CORRUPTION);
+                                return Err(format!(
+                                    "corrupt WAL {} final frame: {error}",
+                                    self.path.display()
+                                ));
+                            }
                             // Complete valid frame without trailing newline — keep it
                             // and normalize by appending the missing newline so the
                             // next append does not corrupt it (PMP38 P0-B).
                             lines.push(last);
                             self.append_missing_newline().await?;
                         }
-                        _ => {
-                            // Genuinely truncated or corrupt — discard.
+                        Err(_) => {
+                            // Syntactically incomplete tail — discard.
                             has_truncated = true;
                             truncated_at = bytes.len().saturating_sub(last.len());
                         }
@@ -883,14 +906,30 @@ impl PersistenceWal {
             let has_intact_prefix = lines[..last_real_idx].iter().any(|l| !l.is_empty());
             if has_intact_prefix && !lines[last_real_idx].is_empty() {
                 let last_real = lines[last_real_idx];
-                let is_valid = serde_json::from_slice::<WalFrame>(last_real)
-                    .map(|f| f.verify().is_ok() && f.ver <= WAL_FORMAT_VERSION)
-                    .unwrap_or(false);
-                if !is_valid {
-                    has_truncated = true;
-                    torn_final_line = true;
-                    truncated_at = line_starts[last_real_idx];
-                    lines.truncate(last_real_idx);
+                match serde_json::from_slice::<WalFrame>(last_real) {
+                    Err(_) => {
+                        has_truncated = true;
+                        torn_final_line = true;
+                        truncated_at = line_starts[last_real_idx];
+                        lines.truncate(last_real_idx);
+                    }
+                    Ok(frame) => {
+                        if frame.ver > WAL_FORMAT_VERSION {
+                            self.mark_degraded(DEGRADED_CORRUPTION);
+                            return Err(format!(
+                                "WAL {} final frame uses unsupported format version {}",
+                                self.path.display(),
+                                frame.ver
+                            ));
+                        }
+                        if let Err(error) = frame.verify() {
+                            self.mark_degraded(DEGRADED_CORRUPTION);
+                            return Err(format!(
+                                "corrupt WAL {} final frame: {error}",
+                                self.path.display()
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -934,7 +973,11 @@ impl PersistenceWal {
             parsed_records.push(frame.record.clone());
 
             match frame.record {
-                WalRecord::Admission { id, event, sequence } => {
+                WalRecord::Admission {
+                    id,
+                    event,
+                    sequence,
+                } => {
                     admitted.push((id, event, sequence));
                 }
                 WalRecord::Ack { id } => {
@@ -1059,7 +1102,6 @@ impl PersistenceWal {
         Ok(unacked)
     }
 
-
     /// Upgrade a v1-format WAL to v2, assigning sequential sequence numbers
     /// to v1 admission records that lack the `sequence` field.
     ///
@@ -1067,7 +1109,11 @@ impl PersistenceWal {
     /// idempotent migration — the WAL is rewritten atomically (write temp,
     /// fsync, rename, fsync-parent) so a crash during upgrade leaves the
     /// original v1 file intact.
-    async fn upgrade_wal_from_v1(&self, records: &[WalRecord], v1_start: u64) -> Result<(), String> {
+    async fn upgrade_wal_from_v1(
+        &self,
+        records: &[WalRecord],
+        v1_start: u64,
+    ) -> Result<(), String> {
         let temp = self.path.with_extension("wal.tmp");
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
@@ -1080,7 +1126,11 @@ impl PersistenceWal {
         let mut next_seq = v1_start;
         for record in records {
             let upgraded = match record {
-                WalRecord::Admission { id, event, sequence } if *sequence == 0 => {
+                WalRecord::Admission {
+                    id,
+                    event,
+                    sequence,
+                } if *sequence == 0 => {
                     let seq = next_seq;
                     next_seq += 1;
                     WalRecord::Admission {
@@ -1244,7 +1294,11 @@ impl PersistenceWal {
                 )
             })?;
             match &frame.record {
-                WalRecord::Admission { id, event, sequence } => {
+                WalRecord::Admission {
+                    id,
+                    event,
+                    sequence,
+                } => {
                     admitted.push((*id, event.clone(), *sequence));
                 }
                 WalRecord::Ack { id } => {
@@ -1267,7 +1321,10 @@ impl PersistenceWal {
             let max_sequence = self.admit_sequence.load(Ordering::Acquire);
             let _ = tokio::fs::remove_file(&self.path).await;
             let marker_path = self.path.with_extension("wal.instance");
-            if let Err(e) = self.write_marker_inner(&marker_path, true, max_sequence).await {
+            if let Err(e) = self
+                .write_marker_inner(&marker_path, true, max_sequence)
+                .await
+            {
                 // The WAL was already removed; without a clean marker the next
                 // boot would fail-closed on the missing WAL.  This is a
                 // compact-transaction failure — lock the WAL (P0-C).
@@ -1304,36 +1361,30 @@ impl PersistenceWal {
                 id: *id,
                 event: event.clone(),
                 sequence: *sequence,
-            }).map_err(|e| {
+            })
+            .map_err(|e| {
                 self.mark_degraded(DEGRADED_COMPACT);
                 format!("serialize compacted WAL frame: {e}")
             })?;
-            let mut line = serde_json::to_vec(&frame)
-                .map_err(|e| {
-                    self.mark_degraded(DEGRADED_COMPACT);
-                    format!("serialize compacted WAL frame: {e}")
-                })?;
+            let mut line = serde_json::to_vec(&frame).map_err(|e| {
+                self.mark_degraded(DEGRADED_COMPACT);
+                format!("serialize compacted WAL frame: {e}")
+            })?;
             line.push(b'\n');
-            file.write_all(&line)
-                .await
-                .map_err(|e| {
-                    self.mark_degraded(DEGRADED_COMPACT);
-                    format!("write WAL temp {}: {e}", temp.display())
-                })?;
+            file.write_all(&line).await.map_err(|e| {
+                self.mark_degraded(DEGRADED_COMPACT);
+                format!("write WAL temp {}: {e}", temp.display())
+            })?;
         }
 
-        file.flush()
-            .await
-            .map_err(|e| {
-                self.mark_degraded(DEGRADED_COMPACT);
-                format!("flush WAL temp {}: {e}", temp.display())
-            })?;
-        file.sync_all()
-            .await
-            .map_err(|e| {
-                self.mark_degraded(DEGRADED_COMPACT);
-                format!("sync WAL temp {}: {e}", temp.display())
-            })?;
+        file.flush().await.map_err(|e| {
+            self.mark_degraded(DEGRADED_COMPACT);
+            format!("flush WAL temp {}: {e}", temp.display())
+        })?;
+        file.sync_all().await.map_err(|e| {
+            self.mark_degraded(DEGRADED_COMPACT);
+            format!("sync WAL temp {}: {e}", temp.display())
+        })?;
         drop(file);
 
         // Atomic rename.
@@ -1349,12 +1400,10 @@ impl PersistenceWal {
         // Sync parent directory so the rename is durable.
         if let Some(parent) = self.path.parent() {
             if let Ok(dir) = tokio::fs::File::open(parent).await {
-                dir.sync_all()
-                    .await
-                    .map_err(|e| {
-                        self.mark_degraded(DEGRADED_COMPACT);
-                        format!("sync parent directory {}: {e}", parent.display())
-                    })?;
+                dir.sync_all().await.map_err(|e| {
+                    self.mark_degraded(DEGRADED_COMPACT);
+                    format!("sync parent directory {}: {e}", parent.display())
+                })?;
             }
         }
 
@@ -1425,16 +1474,9 @@ impl PersistenceWal {
         // mid-file corruption.
         let mut segments: Vec<&[u8]> = bytes.split(|b| *b == b'\n').collect();
 
-        // Tail leniency (PMP47, symmetric with `replay()`): a hard kill tears
-        // only the FINAL frame.  It can leave the final line in two forms:
-        //  1. a partial frame with no trailing newline (handled below), or
-        //  2. a newline-terminated line whose body fails parse/checksum (the
-        //     delimiter flushed but the frame body did not).
-        // Both are crash artifacts, auto-dropped at the tail; corruption in
-        // any EARLIER line — or a WAL whose sole content is the corrupt line —
-        // still fails closed.  Without this, a torn final frame would latch
-        // CORRUPTION at runtime (the 5s recovery scanner calls list_pending),
-        // rejecting all further admissions and auth until manual WAL deletion.
+        // Tail leniency mirrors replay(): only syntactically incomplete final
+        // lines are discarded. A parsed frame with a bad checksum is real
+        // corruption and must fail closed.
         let file_ends_with_newline = bytes.last().map(|&b| b == b'\n').unwrap_or(true);
         if file_ends_with_newline {
             // File ends with a newline, so the final split segment is "".  The
@@ -1449,18 +1491,33 @@ impl PersistenceWal {
                 let has_intact_prefix = segments[..last_real_idx].iter().any(|l| !l.is_empty());
                 if has_intact_prefix && !segments[last_real_idx].is_empty() {
                     let last_real = segments[last_real_idx];
-                    let is_valid = serde_json::from_slice::<WalFrame>(last_real)
-                        .map(|f| f.verify().is_ok() && f.ver <= WAL_FORMAT_VERSION)
-                        .unwrap_or(false);
-                    if !is_valid {
-                        // Hard-kill torn final frame — drop it from the read.
-                        self.truncated_frames.fetch_add(1, Ordering::Release);
-                        warn!(
-                            "WAL {} had a corrupt final frame (skipped by list_pending); \
-                             expected after a hard kill that tore the tail write",
-                            self.path.display(),
-                        );
-                        segments.truncate(last_real_idx);
+                    match serde_json::from_slice::<WalFrame>(last_real) {
+                        Err(_) => {
+                            // Hard-kill torn final frame — drop it from the read.
+                            self.truncated_frames.fetch_add(1, Ordering::Release);
+                            warn!(
+                                "WAL {} had a syntactically truncated final frame (skipped by list_pending)",
+                                self.path.display(),
+                            );
+                            segments.truncate(last_real_idx);
+                        }
+                        Ok(frame) if frame.ver > WAL_FORMAT_VERSION => {
+                            self.mark_degraded(DEGRADED_CORRUPTION);
+                            return Err(format!(
+                                "WAL {} during list_pending: unsupported final format version {}",
+                                self.path.display(),
+                                frame.ver
+                            ));
+                        }
+                        Ok(frame) => {
+                            if let Err(error) = frame.verify() {
+                                self.mark_degraded(DEGRADED_CORRUPTION);
+                                return Err(format!(
+                                    "corrupt WAL {} during list_pending final frame: {error}",
+                                    self.path.display()
+                                ));
+                            }
+                        }
                     }
                 }
             }
@@ -1469,12 +1526,28 @@ impl PersistenceWal {
             // a complete-but-unflushed frame OR a truncated tail.  Try to parse
             // it; only discard if it is genuinely corrupt/truncated.
             if !last.is_empty() {
-                let is_valid = serde_json::from_slice::<WalFrame>(last)
-                    .map(|f| f.verify().is_ok() && f.ver <= WAL_FORMAT_VERSION)
-                    .unwrap_or(false);
-                if !is_valid {
-                    // Genuinely truncated tail — pop it and move on.
-                    segments.pop();
+                match serde_json::from_slice::<WalFrame>(last) {
+                    Err(_) => {
+                        // Syntactically truncated tail — pop it and move on.
+                        segments.pop();
+                    }
+                    Ok(frame) if frame.ver > WAL_FORMAT_VERSION => {
+                        self.mark_degraded(DEGRADED_CORRUPTION);
+                        return Err(format!(
+                            "WAL {} during list_pending: unsupported final format version {}",
+                            self.path.display(),
+                            frame.ver
+                        ));
+                    }
+                    Ok(frame) => {
+                        if let Err(error) = frame.verify() {
+                            self.mark_degraded(DEGRADED_CORRUPTION);
+                            return Err(format!(
+                                "corrupt WAL {} during list_pending final frame: {error}",
+                                self.path.display()
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -1511,7 +1584,11 @@ impl PersistenceWal {
                 ));
             }
             match frame.record {
-                WalRecord::Admission { id, event, sequence } => {
+                WalRecord::Admission {
+                    id,
+                    event,
+                    sequence,
+                } => {
                     admitted.push((id, event, sequence));
                 }
                 WalRecord::Ack { id } => {
@@ -1771,7 +1848,10 @@ mod tests {
 
         let wal2 = PersistenceWal::new(&path);
         let replay = wal2.replay().await;
-        assert!(replay.is_ok(), "clean marker must allow replay with no WAL: {replay:?}");
+        assert!(
+            replay.is_ok(),
+            "clean marker must allow replay with no WAL: {replay:?}"
+        );
 
         let _ = tokio::fs::remove_file(path.with_extension("wal.instance")).await;
     }
@@ -1807,8 +1887,14 @@ mod tests {
         // list_pending must fail closed on MID-file corruption (not skip
         // silently) — only the final line enjoys the torn-write leniency.
         let result = wal.list_pending().await;
-        assert!(result.is_err(), "list_pending must fail on mid-file corruption");
-        assert!(wal.is_degraded(), "WAL must be marked degraded on corruption");
+        assert!(
+            result.is_err(),
+            "list_pending must fail on mid-file corruption"
+        );
+        assert!(
+            wal.is_degraded(),
+            "WAL must be marked degraded on corruption"
+        );
 
         let _ = tokio::fs::remove_file(&path).await;
         let _ = tokio::fs::remove_file(path.with_extension("wal.instance")).await;
@@ -1833,12 +1919,17 @@ mod tests {
             .await
             .unwrap();
         use tokio::io::AsyncWriteExt;
-        file.write_all(b"{\"ver\":2,\"record\":\"admission\",\"id\":\"").await.unwrap();
+        file.write_all(b"{\"ver\":2,\"record\":\"admission\",\"id\":\"")
+            .await
+            .unwrap();
         drop(file);
 
         // A trailing truncated line is tolerated; list_pending still succeeds.
         let result = wal.list_pending().await;
-        assert!(result.is_ok(), "trailing truncation must be tolerated: {result:?}");
+        assert!(
+            result.is_ok(),
+            "trailing truncation must be tolerated: {result:?}"
+        );
         assert!(!wal.is_degraded());
 
         let _ = tokio::fs::remove_file(&path).await;
@@ -1846,14 +1937,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_pending_tolerates_hard_kill_torn_final_newline_frame() {
-        // A hard kill can tear the FINAL frame even when the trailing newline
-        // was flushed (checksum mismatch with the delimiter present).  The 5s
-        // recovery scanner calls list_pending — without this leniency a torn
-        // final frame latches CORRUPTION at runtime and rejects all further
-        // admissions/auth until manual WAL deletion.  With an intact prefix it
-        // must be skipped, not fail-closed (PMP47 tail rule, symmetric with
-        // replay()).
+    async fn list_pending_rejects_checksum_corrupt_final_frame() {
+        // A complete JSON frame with a bad checksum is indistinguishable from
+        // on-disk corruption and must fail closed, even when it is the final
+        // line. Only syntactically incomplete tails are tolerated.
         let path = std::env::temp_dir().join(format!(
             "pmp-wal-runtime-torn-{}.jsonl",
             uuid::Uuid::new_v4()
@@ -1874,10 +1961,13 @@ mod tests {
 
         let result = wal.list_pending().await;
         assert!(
-            result.is_ok(),
-            "torn final frame must be tolerated by list_pending: {result:?}"
+            result.is_err(),
+            "checksum corruption must fail closed: {result:?}"
         );
-        assert!(!wal.is_degraded(), "torn final frame must not latch corruption");
+        assert!(
+            wal.is_degraded(),
+            "checksum corruption must latch degradation"
+        );
 
         let _ = tokio::fs::remove_file(&path).await;
         let _ = tokio::fs::remove_file(path.with_extension("wal.instance")).await;
@@ -1917,10 +2007,7 @@ mod tests {
         // (open for append will fail with EISDIR).  The sequence counter
         // must NOT advance, so a subsequent successful admit reuses the
         // same sequence — no gap.
-        let path = std::env::temp_dir().join(format!(
-            "pmp-wal-gap-{}.jsonl",
-            uuid::Uuid::new_v4()
-        ));
+        let path = std::env::temp_dir().join(format!("pmp-wal-gap-{}.jsonl", uuid::Uuid::new_v4()));
         let wal = PersistenceWal::new(&path);
         wal.replay().await.unwrap();
 
@@ -1942,7 +2029,8 @@ mod tests {
 
     #[tokio::test]
     async fn fuzz_malformed_json_is_rejected() {
-        let path = std::env::temp_dir().join(format!("pmp-wal-fuzz-{}.jsonl", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("pmp-wal-fuzz-{}.jsonl", uuid::Uuid::new_v4()));
         // Write completely invalid JSON
         tokio::fs::write(&path, b"not valid json\n").await.unwrap();
         let wal = PersistenceWal::new(&path);
@@ -1952,12 +2040,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hard_kill_torn_final_frame_is_auto_cleaned() {
-        // A hard kill can tear the FINAL frame even when the trailing newline
-        // was flushed: the body fails checksum (or won't parse) while the line
-        // terminator is present.  With an intact prefix before it, replay must
-        // truncate the corrupt final line instead of failing closed — the
-        // server boots without manual WAL cleanup.
+    async fn replay_rejects_checksum_corrupt_final_frame() {
+        // A complete JSON frame with a bad checksum is corruption, not a
+        // syntactically truncated crash tail. Replay must fail closed rather
+        // than silently deleting an admitted event.
         let path =
             std::env::temp_dir().join(format!("pmp-wal-torn-final-{}.jsonl", uuid::Uuid::new_v4()));
         let wal = PersistenceWal::new(&path);
@@ -1975,17 +2061,13 @@ mod tests {
         tokio::fs::write(&path, &content).await.unwrap();
 
         let replay = wal.replay().await;
-        assert!(replay.is_ok(), "corrupt final frame must auto-clean: {replay:?}");
-        // The intact prefix was fully ACKed; nothing remains pending.
-        assert_eq!(replay.unwrap().len(), 0);
-        // The file must be physically truncated back to the intact prefix so
-        // the next append does not merge into a corrupt tail.
-        let after = tokio::fs::read(&path).await.unwrap();
-        assert_eq!(after, intact_prefix, "WAL must be truncated to the intact prefix");
-        assert_eq!(
-            wal.truncated_frames_count(),
-            1,
-            "the torn final frame must be counted"
+        assert!(
+            replay.is_err(),
+            "checksum corruption must fail closed: {replay:?}"
+        );
+        assert!(
+            wal.is_degraded(),
+            "checksum corruption must latch degradation"
         );
 
         let _ = tokio::fs::remove_file(path.with_extension("wal.instance")).await;
@@ -2002,25 +2084,36 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let corrupt = r#"{"ver":2,"record":"admission","id":"00000000-0000-0000-0000-0000000000ff","event":{"ServerEvent":{"kind":"bad","payload":{"n":1}}},"sequence":99,"cksum":"0000"}"#;
-        tokio::fs::write(&path, format!("{corrupt}\n")).await.unwrap();
+        tokio::fs::write(&path, format!("{corrupt}\n"))
+            .await
+            .unwrap();
         let wal = PersistenceWal::new(&path);
         let result = wal.replay().await;
-        assert!(result.is_err(), "no intact prefix must fail closed: {result:?}");
+        assert!(
+            result.is_err(),
+            "no intact prefix must fail closed: {result:?}"
+        );
         assert!(!wal.replay_succeeded());
         let _ = tokio::fs::remove_file(path).await;
     }
 
     #[tokio::test]
     async fn fuzz_partial_frame_at_end_is_truncated() {
-        let path = std::env::temp_dir().join(format!("pmp-wal-trunc2-{}.jsonl", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("pmp-wal-trunc2-{}.jsonl", uuid::Uuid::new_v4()));
         let wal = PersistenceWal::new(&path);
         wal.replay().await.unwrap();
         wal.admit(make_event("good")).await.unwrap();
         // Append a truncated JSON fragment
         let mut file = tokio::fs::OpenOptions::new()
-            .append(true).open(&path).await.unwrap();
+            .append(true)
+            .open(&path)
+            .await
+            .unwrap();
         use tokio::io::AsyncWriteExt;
-        file.write_all(b"{\"ver\":1,\"record\":\"admission\"").await.unwrap();
+        file.write_all(b"{\"ver\":1,\"record\":\"admission\"")
+            .await
+            .unwrap();
         file.flush().await.unwrap();
         drop(file);
         // Replay should succeed, discarding truncated line
@@ -2031,7 +2124,8 @@ mod tests {
 
     #[tokio::test]
     async fn fuzz_repeated_ack_is_idempotent() {
-        let path = std::env::temp_dir().join(format!("pmp-wal-idem-{}.jsonl", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("pmp-wal-idem-{}.jsonl", uuid::Uuid::new_v4()));
         let wal = PersistenceWal::new(&path);
         wal.replay().await.unwrap();
         let (id, _) = wal.admit(make_event("test")).await.unwrap();
@@ -2044,7 +2138,8 @@ mod tests {
 
     #[tokio::test]
     async fn fuzz_concurrent_admit_and_replay() {
-        let path = std::env::temp_dir().join(format!("pmp-wal-conc-{}.jsonl", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("pmp-wal-conc-{}.jsonl", uuid::Uuid::new_v4()));
         let wal = std::sync::Arc::new(PersistenceWal::new(&path));
         wal.replay().await.unwrap();
 
@@ -2069,8 +2164,7 @@ mod tests {
 
     #[tokio::test]
     async fn replay_sequence_numbers_are_monotonic() {
-        let path =
-            std::env::temp_dir().join(format!("pmp-wal-seq-{}.jsonl", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("pmp-wal-seq-{}.jsonl", uuid::Uuid::new_v4()));
         let wal = PersistenceWal::new(&path);
         wal.replay().await.unwrap();
 
@@ -2085,9 +2179,15 @@ mod tests {
         // list_pending should return the same sequences.
         let pending = wal.list_pending().await.unwrap();
         for (pid, _pe, pseq) in &pending {
-            if *pid == id1 { assert_eq!(*pseq, seq1); }
-            if *pid == id2 { assert_eq!(*pseq, seq2); }
-            if *pid == id3 { assert_eq!(*pseq, seq3); }
+            if *pid == id1 {
+                assert_eq!(*pseq, seq1);
+            }
+            if *pid == id2 {
+                assert_eq!(*pseq, seq2);
+            }
+            if *pid == id3 {
+                assert_eq!(*pseq, seq3);
+            }
         }
 
         // After ACK, the entry is removed from the sequences map.
@@ -2096,8 +2196,12 @@ mod tests {
         assert_eq!(pending_after.len(), 2);
         // Remaining entries should still have their original sequences.
         for (pid, _pe, pseq) in &pending_after {
-            if *pid == id1 { assert_eq!(*pseq, seq1); }
-            if *pid == id3 { assert_eq!(*pseq, seq3); }
+            if *pid == id1 {
+                assert_eq!(*pseq, seq1);
+            }
+            if *pid == id3 {
+                assert_eq!(*pseq, seq3);
+            }
         }
 
         let _ = tokio::fs::remove_file(path).await;
@@ -2120,15 +2224,17 @@ mod tests {
 
     #[tokio::test]
     async fn fault_wal_deleted_fails_with_instance_marker() {
-        let path =
-            std::env::temp_dir().join(format!("pmp-wal-del-{}.jsonl", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("pmp-wal-del-{}.jsonl", uuid::Uuid::new_v4()));
         let wal = PersistenceWal::new(&path);
         wal.replay().await.unwrap(); // creates instance marker
         wal.admit(make_event("will-be-detected")).await.unwrap();
         let _ = tokio::fs::remove_file(&path).await;
         let wal2 = PersistenceWal::new(&path);
         let result = wal2.replay().await;
-        assert!(result.is_err(), "deleted WAL after first use must fail: {result:?}");
+        assert!(
+            result.is_err(),
+            "deleted WAL after first use must fail: {result:?}"
+        );
         assert!(!wal2.replay_succeeded());
         // Cleanup: remove instance marker
         let marker = path.with_extension("wal.instance");
@@ -2137,8 +2243,7 @@ mod tests {
 
     #[tokio::test]
     async fn fault_compact_and_admit_no_data_loss() {
-        let path =
-            std::env::temp_dir().join(format!("pmp-wal-cc-{}.jsonl", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("pmp-wal-cc-{}.jsonl", uuid::Uuid::new_v4()));
         let wal = std::sync::Arc::new(PersistenceWal::new(&path));
         wal.replay().await.unwrap();
         let _ = wal.admit(make_event("seed1")).await.unwrap();
@@ -2151,7 +2256,10 @@ mod tests {
         });
         let _ = tokio::join!(h1, h2);
         let replay = wal.replay().await.unwrap();
-        let kinds: Vec<String> = replay.iter().map(|(_, e, _)| e.kind().to_string()).collect();
+        let kinds: Vec<String> = replay
+            .iter()
+            .map(|(_, e, _)| e.kind().to_string())
+            .collect();
         assert!(
             kinds.contains(&"concurrent".to_string()),
             "concurrent event must survive: {kinds:?}"
@@ -2169,7 +2277,10 @@ mod tests {
         tokio::fs::write(&path, b"").await.unwrap();
         let wal2 = PersistenceWal::new(&path);
         let result = wal2.replay().await;
-        assert!(result.is_err(), "zeroed WAL after first use must fail: {result:?}");
+        assert!(
+            result.is_err(),
+            "zeroed WAL after first use must fail: {result:?}"
+        );
         assert!(!wal2.replay_succeeded());
         let marker = path.with_extension("wal.instance");
         let _ = tokio::fs::remove_file(&marker).await;
@@ -2208,8 +2319,10 @@ mod tests {
 
     #[tokio::test]
     async fn fatal_compact_rejects_ack_but_recovers_on_success() {
-        let path =
-            std::env::temp_dir().join(format!("pmp-wal-compactfatal-{}.jsonl", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "pmp-wal-compactfatal-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
         let wal = PersistenceWal::new(&path);
         wal.replay().await.unwrap();
         let (id, _) = wal.admit(make_event("e")).await.unwrap();
@@ -2224,7 +2337,10 @@ mod tests {
         // A successful compact clears the recoverable COMPACT bit (P0-C).
         wal.clear_compact_degraded();
         assert!(!wal.is_fatal(), "clearing COMPACT must un-latch fatal");
-        assert!(wal.ack(id).await.is_ok(), "ack must work after COMPACT cleared");
+        assert!(
+            wal.ack(id).await.is_ok(),
+            "ack must work after COMPACT cleared"
+        );
 
         let _ = tokio::fs::remove_file(path.with_extension("wal.instance")).await;
         let _ = tokio::fs::remove_file(path).await;
@@ -2363,10 +2479,18 @@ mod tests {
             original_len + line.len() as u64 + 1,
             "the confirmed frame must remain with exactly one trailing newline"
         );
-        assert_eq!(bytes.last(), Some(&b'\n'), "the tail must end with a newline");
+        assert_eq!(
+            bytes.last(),
+            Some(&b'\n'),
+            "the tail must end with a newline"
+        );
         // Replay must see the normalized frame and report no pending work.
         let replay = wal.replay().await.unwrap();
-        assert_eq!(replay.len(), 0, "the normalized ack frame must replay cleanly");
+        assert_eq!(
+            replay.len(),
+            0,
+            "the normalized ack frame must replay cleanly"
+        );
 
         let _ = tokio::fs::remove_file(path.with_extension("wal.instance")).await;
         let _ = tokio::fs::remove_file(path).await;
@@ -2376,8 +2500,10 @@ mod tests {
 
     #[tokio::test]
     async fn compact_corruption_latches_fatal_and_blocks_admissions() {
-        let path =
-            std::env::temp_dir().join(format!("pmp-wal-compact-corrupt-{}.jsonl", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "pmp-wal-compact-corrupt-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
         let wal = PersistenceWal::new(&path);
         wal.replay().await.unwrap();
         let (id, _) = wal.admit(make_event("one")).await.unwrap();
@@ -2394,7 +2520,10 @@ mod tests {
 
         let result = wal.compact().await;
         assert!(result.is_err(), "compact must fail on mid-file corruption");
-        assert!(wal.is_fatal(), "corruption found by compact must be latched");
+        assert!(
+            wal.is_fatal(),
+            "corruption found by compact must be latched"
+        );
         assert!(
             wal.degraded.load(Ordering::Acquire) & DEGRADED_CORRUPTION != 0,
             "the corruption bit (not merely COMPACT) must be set"
@@ -2410,8 +2539,10 @@ mod tests {
 
     #[tokio::test]
     async fn compact_success_clears_compact_but_not_corruption() {
-        let path =
-            std::env::temp_dir().join(format!("pmp-wal-compact-clear-{}.jsonl", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "pmp-wal-compact-clear-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
         let wal = PersistenceWal::new(&path);
         wal.replay().await.unwrap();
         let (id, _) = wal.admit(make_event("keep")).await.unwrap();
@@ -2442,8 +2573,10 @@ mod tests {
 
     #[tokio::test]
     async fn marker_recreated_active_when_missing_at_runtime() {
-        let path =
-            std::env::temp_dir().join(format!("pmp-wal-marker-lost-{}.jsonl", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "pmp-wal-marker-lost-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
         let wal = PersistenceWal::new(&path);
         wal.replay().await.unwrap();
         let marker_path = path.with_extension("wal.instance");
@@ -2454,8 +2587,14 @@ mod tests {
 
         // The next admission must recreate it (active), not silently ignore it.
         let _ = wal.admit(make_event("recreate")).await.unwrap();
-        assert!(marker_path.exists(), "marker must be recreated after runtime loss");
-        assert!(!wal.marker_degraded(), "successful recreate must clear MARKER degraded");
+        assert!(
+            marker_path.exists(),
+            "marker must be recreated after runtime loss"
+        );
+        assert!(
+            !wal.marker_degraded(),
+            "successful recreate must clear MARKER degraded"
+        );
 
         let content = tokio::fs::read_to_string(&marker_path).await.unwrap();
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
@@ -2471,8 +2610,10 @@ mod tests {
 
     #[tokio::test]
     async fn active_marker_verification_clears_marker_degraded() {
-        let path =
-            std::env::temp_dir().join(format!("pmp-wal-marker-selfheal-{}.jsonl", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "pmp-wal-marker-selfheal-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
         let wal = PersistenceWal::new(&path);
         wal.replay().await.unwrap();
         wal.admit(make_event("a")).await.unwrap(); // marker becomes active
@@ -2495,8 +2636,10 @@ mod tests {
 
     #[tokio::test]
     async fn clean_marker_empty_wal_equivalent_to_no_wal() {
-        let path =
-            std::env::temp_dir().join(format!("pmp-wal-clean-empty-{}.jsonl", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "pmp-wal-clean-empty-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
         let wal = PersistenceWal::new(&path);
         wal.replay().await.unwrap(); // writes a CLEAN first-boot marker
 
@@ -2521,8 +2664,10 @@ mod tests {
 
     #[tokio::test]
     async fn active_marker_empty_wal_fails_closed() {
-        let path =
-            std::env::temp_dir().join(format!("pmp-wal-active-empty-{}.jsonl", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "pmp-wal-active-empty-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
         let wal = PersistenceWal::new(&path);
         wal.replay().await.unwrap();
         wal.admit(make_event("data")).await.unwrap(); // marker becomes ACTIVE
@@ -2543,15 +2688,20 @@ mod tests {
 
     #[tokio::test]
     async fn empty_wal_without_marker_gets_clean_marker() {
-        let path =
-            std::env::temp_dir().join(format!("pmp-wal-nomarker-empty-{}.jsonl", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "pmp-wal-nomarker-empty-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
         // An empty WAL file with NO marker (crash during first-boot replay after
         // create(true) but before the marker was written).
         tokio::fs::write(&path, b"").await.unwrap();
 
         let wal = PersistenceWal::new(&path);
         let replay = wal.replay().await;
-        assert!(replay.is_ok(), "empty WAL without marker must replay Ok: {replay:?}");
+        assert!(
+            replay.is_ok(),
+            "empty WAL without marker must replay Ok: {replay:?}"
+        );
 
         let marker_path = path.with_extension("wal.instance");
         let content = tokio::fs::read_to_string(&marker_path).await.unwrap();

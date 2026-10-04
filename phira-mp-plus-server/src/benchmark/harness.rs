@@ -84,11 +84,7 @@ pub struct BenchmarkHarness {
 }
 
 impl BenchmarkHarness {
-    pub fn new(
-        state: Arc<PlusServerState>,
-        params: ModeParams,
-        status: Arc<CliStatus>,
-    ) -> Self {
+    pub fn new(state: Arc<PlusServerState>, params: ModeParams, status: Arc<CliStatus>) -> Self {
         Self {
             state,
             params,
@@ -133,10 +129,7 @@ impl BenchmarkHarness {
             None,
         );
         self.state.users.write().await.insert(id, Arc::new(user));
-        self.sessions.push(SessionEntry {
-            user_id: id,
-            name,
-        });
+        self.sessions.push(SessionEntry { user_id: id, name });
         id
     }
 
@@ -175,7 +168,16 @@ impl BenchmarkHarness {
             if let Err(e) = self
                 .state
                 .room_commands
-                .add_user(&self.state, &room_id, uid, &name, false, deadline, None)
+                .add_user(
+                    &self.state,
+                    &room_id,
+                    uid,
+                    &name,
+                    None,
+                    false,
+                    deadline,
+                    None,
+                )
                 .await
             {
                 self.errors += 1;
@@ -231,7 +233,12 @@ impl BenchmarkHarness {
 
     /// 关闭一个房间（teardown / 轮换）。
     async fn close_room(&self, room_id: &str) {
-        if let Err(e) = self.state.room_commands.close_room(&self.state, room_id).await {
+        if let Err(e) = self
+            .state
+            .room_commands
+            .close_room(&self.state, room_id)
+            .await
+        {
             tracing::warn!(room = room_id, %e, "bench close_room failed");
         }
     }

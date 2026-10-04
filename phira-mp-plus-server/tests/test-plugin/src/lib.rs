@@ -1,6 +1,6 @@
 //! Minimal test WASM plugin for integration tests.
 //!
-//! Implements the phira-plugin-v2 world with known, deterministic behavior
+//! Implements the phira-plugin-v3 world with known, deterministic behavior
 //! that integration tests verify against.
 
 // Use wit-bindgen directly instead of the SDK macro because the test
@@ -8,7 +8,7 @@
 // hardcoded "../wit/phira-plugin.wit" path doesn't resolve from here.
 wit_bindgen::generate!({
     path: "../../../wit/phira-plugin.wit",
-    world: "phira-plugin-v2",
+    world: "phira-plugin-v3",
 });
 export!(TestPlugin);
 

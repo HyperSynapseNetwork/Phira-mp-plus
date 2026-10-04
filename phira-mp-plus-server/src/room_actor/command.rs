@@ -1,7 +1,9 @@
 //! Room actor command envelope types.
 
-use crate::plugin::{JudgeEventItem, TouchEventPoint};
 use super::RoomCommandResult;
+use crate::plugin::{JudgeEventItem, TouchEventPoint};
+use crate::session::User;
+use std::sync::Arc;
 use tokio::sync::oneshot;
 
 /// Origin identity of the Session that issued a room command (PMP44 P0-C).
@@ -268,6 +270,10 @@ pub(crate) enum RoomActorCommand {
         room_id: String,
         user_id: i32,
         user_name: String,
+        /// Connection reference attached in the same actor turn as the
+        /// authoritative membership commit. `None` is used by benchmarks and
+        /// internal recovery paths that have no live session.
+        connection: Option<Arc<User>>,
         monitor: bool,
         /// Absolute actor deadline (P0-C/P0-G). The handler refuses to add the
         /// user when the deadline has already passed.
@@ -455,9 +461,15 @@ mod tests {
         assert_eq!(RoomCommandKind::CloseRoom.action(), "close");
         assert_eq!(RoomCommandKind::KickUser.action(), "kick");
         assert_eq!(RoomCommandKind::StartRoom.action(), "start");
-        assert_eq!(RoomCommandKind::EnterReadyPhase.action(), "enter_ready_phase");
+        assert_eq!(
+            RoomCommandKind::EnterReadyPhase.action(),
+            "enter_ready_phase"
+        );
         assert_eq!(RoomCommandKind::CancelStart.action(), "cancel");
-        assert_eq!(RoomCommandKind::BindAndSnapshot.action(), "bind_and_snapshot");
+        assert_eq!(
+            RoomCommandKind::BindAndSnapshot.action(),
+            "bind_and_snapshot"
+        );
     }
 
     #[test]

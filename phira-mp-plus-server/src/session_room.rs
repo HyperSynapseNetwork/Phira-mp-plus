@@ -28,7 +28,9 @@ fn tr(e: String) -> String {
         "no chart selected" => Some("start-no-chart-selected"),
         "room is full" => Some("join-room-full"),
         "administrative start is already in progress" => Some("admin-start-in-progress"),
-        "room is not selecting a chart" | "cannot set chart outside SelectChart state" => Some("invalid-state"),
+        "room is not selecting a chart" | "cannot set chart outside SelectChart state" => {
+            Some("invalid-state")
+        }
         "not in WaitForReady state" => Some("invalid-state"),
         "not in Playing state" => Some("invalid-state"),
         "invalid room id" => Some("invalid-room-id"),
@@ -43,9 +45,7 @@ fn tr(e: String) -> String {
         None => e,
     }
 }
-use phira_mp_common::{
-    JoinRoomResponse, Message, RoomEvent, RoomId, ServerCommand,
-};
+use phira_mp_common::{JoinRoomResponse, Message, RoomEvent, RoomId, ServerCommand};
 use std::{
     collections::HashMap,
     sync::{atomic::Ordering, Arc},
@@ -95,7 +95,10 @@ async fn current_room_in_select_chart(user: &Arc<User>) -> Result<Arc<crate::roo
     let room = current_room(user).await?;
     // Read room lifecycle state from actor snapshot cache.
     if let Some(snap) = user.server.room_snapshot(&room.id.to_string()) {
-        if !matches!(snap.stripped, phira_mp_common::StrippedRoomState::SelectingChart) {
+        if !matches!(
+            snap.stripped,
+            phira_mp_common::StrippedRoomState::SelectingChart
+        ) {
             bail!("{}", tl!("invalid-state"));
         }
     } else {
@@ -115,23 +118,28 @@ pub(crate) async fn build_client_room_state(
     } else {
         None
     };
-    let is_ready = snap.as_ref().and_then(|s| {
-        s.ready_set.as_ref().map(|ready| ready.contains(&user.id))
-    }).unwrap_or(false);
+    let is_ready = snap
+        .as_ref()
+        .and_then(|s| s.ready_set.as_ref().map(|ready| ready.contains(&user.id)))
+        .unwrap_or(false);
     let state = if let Some(ref snap) = snap {
         match snap.stripped {
-            phira_mp_common::StrippedRoomState::SelectingChart =>
-                phira_mp_common::RoomState::SelectChart(snap.chart),
-            phira_mp_common::StrippedRoomState::WaitingForReady =>
-                phira_mp_common::RoomState::WaitingForReady,
-            phira_mp_common::StrippedRoomState::Playing =>
-                phira_mp_common::RoomState::Playing,
+            phira_mp_common::StrippedRoomState::SelectingChart => {
+                phira_mp_common::RoomState::SelectChart(snap.chart)
+            }
+            phira_mp_common::StrippedRoomState::WaitingForReady => {
+                phira_mp_common::RoomState::WaitingForReady
+            }
+            phira_mp_common::StrippedRoomState::Playing => phira_mp_common::RoomState::Playing,
         }
     } else {
         phira_mp_common::RoomState::SelectChart(None)
     };
 
-    let users = room.users().await.into_iter()
+    let users = room
+        .users()
+        .await
+        .into_iter()
         .chain(room.monitors().await)
         .map(|u| (u.id, u.to_info()))
         .collect();
@@ -163,8 +171,16 @@ pub(crate) async fn build_room_data(room: &crate::room::Room) -> phira_mp_common
     };
     let users: Vec<i32> = room.users().await.into_iter().map(|u| u.id).collect();
     let chart = snap.as_ref().and_then(|s| s.chart);
-    let state = snap.as_ref().map_or(phira_mp_common::StrippedRoomState::SelectingChart, |s| s.stripped);
-    let rounds = room.play_history.all().await.iter()
+    let state = snap
+        .as_ref()
+        .map_or(phira_mp_common::StrippedRoomState::SelectingChart, |s| {
+            s.stripped
+        });
+    let rounds = room
+        .play_history
+        .all()
+        .await
+        .iter()
         .map(|r| crate::room::protocol_round(r))
         .collect();
     phira_mp_common::RoomData {
@@ -271,7 +287,10 @@ pub async fn create_room(
     }
     if let Some(limit) = user.server.config.max_rooms {
         if map_guard.len() >= limit {
-            bail!("{}", tl!("server-room-limit-reached", limit => limit.to_string()));
+            bail!(
+                "{}",
+                tl!("server-room-limit-reached", limit => limit.to_string())
+            );
         }
     }
     if !user
@@ -350,11 +369,10 @@ pub async fn create_room(
                 room_id: room_id.to_string(),
             })
             .await;
-        server
-            .publish_runtime_event(crate::event_bus::MpEvent::RoomCreated {
-                room_id: room_id.clone(),
-                room_uuid,
-            });
+        server.publish_runtime_event(crate::event_bus::MpEvent::RoomCreated {
+            room_id: room_id.clone(),
+            room_uuid,
+        });
         // Pre-create the mailbox so the first join doesn't pay creation latency.
         let _ = server
             .room_commands
@@ -434,8 +452,7 @@ impl Drop for JoinCompensationGuard {
                 // PMP45 P0-K: 补偿使用「内部清理 deadline」（200ms）而非命令原始
                 // deadline——补偿必须在 handler 内完整跑完，绝不能被响应预算或外层
                 // run_or_deadline 超时取消（取消会留下 Ghost member，audit §16.2）。
-                let cleanup_deadline =
-                    Instant::now() + std::time::Duration::from_millis(200);
+                let cleanup_deadline = Instant::now() + std::time::Duration::from_millis(200);
                 let compensation = server
                     .room_commands
                     .remove_user(
@@ -544,7 +561,8 @@ pub async fn join_room(
         check_deadline!();
         // Read room lifecycle from actor snapshot for game state check.
         let stripped = if let Some(server) = room.server.upgrade() {
-            server.room_snapshot(&room.id.to_string())
+            server
+                .room_snapshot(&room.id.to_string())
                 .map(|s| s.stripped)
         } else {
             None
@@ -638,6 +656,7 @@ pub async fn join_room(
             &id.to_string(),
             user.id,
             &user.name,
+            Some(Arc::clone(&user)),
             monitor,
             deadline,
             origin.to_room_origin(),
@@ -651,60 +670,8 @@ pub async fn join_room(
     // 超时 → close_uncertain + bail（P0-D uncertain-after-commit），绝不普通
     // bail——那会让用户已提交而客户端被误导。
 
-    // Also add to Room connection mapping (immediate, direct).
-    if !room.add_user(Arc::downgrade(&user), monitor).await {
-        // PMP44 P0-L: Actor AddUser 已提交成员但连接注册表拒绝该用户——在官方
-        // Join 广播（OnJoinRoom/Message::JoinRoom）发出前执行补偿，撤销 Actor
-        // 成员，避免 Ghost member（audit §16：actor 有成员但 user.room 为空、
-        // 注册表为空）。
-        warn!(
-            user = user.id,
-            room = %id,
-            "room.add_user failed after actor AddUser; compensating actor remove_user"
-        );
-        // PMP45 P0-J/P0-14（audit §16.2/§18）：补偿使用「内部清理 deadline」
-        // （`Instant::now() + 200ms`），而不是命令的原始 deadline——补偿必须
-        // 在 handler 内完整跑完，绝不能被响应预算或外层 `run_or_deadline` 超时
-        // 取消（取消会留下 Ghost member）。200ms 远小于 response budget
-        //（默认 1000ms），处于安全范围内。
-        let cleanup_deadline =
-            Instant::now() + std::time::Duration::from_millis(200);
-        let compensation = user
-            .server
-            .room_commands
-            .remove_user(
-                &user.server,
-                &id.to_string(),
-                user.id,
-                Some(cleanup_deadline),
-                origin.to_room_origin(),
-            )
-            .await;
-        if compensation.is_err() {
-            // PMP45 P0-K: 补偿也失败——Ghost member 遗留，房间进入 degraded，
-            // 不再接受新的 Join，直到操作员 / 未来 reconcile 清空。结果不确定
-            //（actor 成员可能仍在）——关闭 origin 传输，走 lost-connection 路径，
-            // 客户端 reconnect Authenticate 恢复权威状态。
-            warn!(
-                user = user.id,
-                room = %id,
-                "compensating remove_user also failed; marking room degraded and closing origin transport"
-            );
-            let _ = user
-                .server
-                .room_commands
-                .set_degraded(&user.server, &id.to_string(), true)
-                .await;
-            join_guard.disarm();
-            origin.close_uncertain().await;
-            bail!("failed to register user connection");
-        }
-        // 补偿成功：结果确定（未提交成员），撤销 Drop 补偿，发送错误给客户端，
-        // 客户端可重试 Join。
-        join_guard.disarm();
-        bail!("failed to register user connection");
-    }
-    // 连接映射成功——actor 成员与连接注册表齐备，撤销 Drop 补偿。
+    // The actor command attached the connection and committed membership as a
+    // single serialized operation.
     join_guard.disarm();
 
     info!(
@@ -753,7 +720,8 @@ pub async fn join_room(
     // WaitingForReady 状态下不直接包含谱面 ID）。
     let (room_state, deferred_wfr) = if late_join {
         let chart = if let Some(server) = room.server.upgrade() {
-            server.room_snapshot(&room.id.to_string())
+            server
+                .room_snapshot(&room.id.to_string())
                 .and_then(|s| s.chart)
         } else {
             None
@@ -761,7 +729,10 @@ pub async fn join_room(
         (phira_mp_common::RoomState::SelectChart(chart), false)
     } else {
         let client_state = build_client_room_state(&room, &user).await;
-        let is_waiting = matches!(client_state.state, phira_mp_common::RoomState::WaitingForReady);
+        let is_waiting = matches!(
+            client_state.state,
+            phira_mp_common::RoomState::WaitingForReady
+        );
         (client_state.state, is_waiting)
     };
 
@@ -854,7 +825,11 @@ pub async fn join_room(
     {
         let history = room.chat_history.read().await;
         for msg in history.iter() {
-            if let Message::Chat { user: chat_user, content } = msg {
+            if let Message::Chat {
+                user: chat_user,
+                content,
+            } = msg
+            {
                 let _ = origin
                     .try_send(ServerCommand::Message(Message::Chat {
                         user: *chat_user,
@@ -914,19 +889,29 @@ pub async fn join_room(
                     is_monitor: monitor,
                 })
                 .await;
-            server
-                .publish_runtime_event(crate::event_bus::MpEvent::RoomJoined {
-                    room_id: room_id.clone(),
-                    user_id: uid,
-                });
+            server.publish_runtime_event(crate::event_bus::MpEvent::RoomJoined {
+                room_id: room_id.clone(),
+                user_id: uid,
+            });
         }
         server
-            .record_user_room_history(uid, room_id.to_string(), room_arc.uuid.to_string(), joined_at)
+            .record_user_room_history(
+                uid,
+                room_id.to_string(),
+                room_arc.uuid.to_string(),
+                joined_at,
+            )
             .await;
         server.refresh_room_display_metadata_background(&room_arc);
         // Route SetLive(true) and set_display_name through mailbox — fire-and-forget.
-        let _ = server.room_commands.set_live(&server, &room_id.to_string(), true).await;
-        let _ = server.room_commands.set_display_name(&server, &room_id.to_string(), uid, &uname).await;
+        let _ = server
+            .room_commands
+            .set_live(&server, &room_id.to_string(), true)
+            .await;
+        let _ = server
+            .room_commands
+            .set_display_name(&server, &room_id.to_string(), uid, &uname)
+            .await;
     });
 
     Ok(())
@@ -948,7 +933,8 @@ pub async fn leave_room(
     );
     let was_monitor = user.monitor.load(Ordering::SeqCst);
     // Route through mailbox for actor_state.members update and Room cleanup.
-    let result = user.server
+    let result = user
+        .server
         .room_commands
         .remove_user(
             &user.server,
@@ -958,7 +944,9 @@ pub async fn leave_room(
             origin.to_room_origin(),
         )
         .await;
-    let room_dropped = result.as_ref().ok()
+    let room_dropped = result
+        .as_ref()
+        .ok()
         .and_then(|v| v.get("room_dropped"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
@@ -1093,46 +1081,50 @@ pub async fn select_chart(
         // remaining absolute deadline — a slow/blocked API must never let a
         // SelectChart commit after the client already timed out.
         let fetch_budget = deadline.saturating_duration_since(Instant::now());
-        let (chart_name, chart_meta): (String, Option<(String, String, String, Option<f32>, Option<String>)>) =
-            match tokio::time::timeout(
-                fetch_budget,
-                user.server.phira_client.get_json::<crate::server::Chart>(
-                    &endpoint,
-                    None,
-                    &format!("/chart/{id}"),
-                    None,
-                    crate::phira_client::PhiraRetryNoticeTarget::Silent,
-                    None,
-                ),
-            )
-            .await
-            {
-                Ok(Ok(chart)) => (
-                    chart.name,
-                    Some((
-                        chart.charter,
-                        chart.composer,
-                        chart.level,
-                        chart.rating,
-                        chart.chart_updated,
-                    )),
-                ),
-                Ok(Err(_)) => {
-                    tracing::warn!("failed to fetch chart {id} from Phira API; using ID as name");
-                    (format!("#{id}"), None)
-                }
-                Err(_) => {
-                    // Deadline exhausted before the API returned — the client has
-                    // already timed out. Do not commit the chart.
-                    bail!("select chart timed out fetching chart metadata");
-                }
-            };
+        let (chart_name, chart_meta): (
+            String,
+            Option<(String, String, String, Option<f32>, Option<String>)>,
+        ) = match tokio::time::timeout(
+            fetch_budget,
+            user.server.phira_client.get_json::<crate::server::Chart>(
+                &endpoint,
+                None,
+                &format!("/chart/{id}"),
+                None,
+                crate::phira_client::PhiraRetryNoticeTarget::Silent,
+                None,
+            ),
+        )
+        .await
+        {
+            Ok(Ok(chart)) => (
+                chart.name,
+                Some((
+                    chart.charter,
+                    chart.composer,
+                    chart.level,
+                    chart.rating,
+                    chart.chart_updated,
+                )),
+            ),
+            Ok(Err(_)) => {
+                tracing::warn!("failed to fetch chart {id} from Phira API; using ID as name");
+                (format!("#{id}"), None)
+            }
+            Err(_) => {
+                // Deadline exhausted before the API returned — the client has
+                // already timed out. Do not commit the chart.
+                bail!("select chart timed out fetching chart metadata");
+            }
+        };
         debug!("chart name: {chart_name}");
 
         // 异步解析谱面时长（RANGE 只下 zip 内正曲音频）；经 mailbox 写入
         // 房间级 chart_duration，供对局超时计算。每次选谱解析，结算时释放。
         {
-            let file_url = user.server.phira_client
+            let file_url = user
+                .server
+                .phira_client
                 .fetch_chart_by_id(&endpoint, id)
                 .await
                 .and_then(|c| c.file);
@@ -1149,7 +1141,10 @@ pub async fn select_chart(
                                 .await;
                             debug!(chart = cid, duration, "chart duration set");
                         }
-                        None => warn!(chart = cid, "chart duration probe failed, using long fallback"),
+                        None => warn!(
+                            chart = cid,
+                            "chart duration probe failed, using long fallback"
+                        ),
                     }
                 });
             }
@@ -1176,8 +1171,10 @@ pub async fn select_chart(
         // 广播谱面信息（谱师/曲师/难度/评分）——按用户语言本地化
         if let Some((charter, composer, level, rating, chart_updated)) = chart_meta {
             if !charter.is_empty() || !composer.is_empty() {
-                let room_seq =
-                    Some(room.last_room_seq.load(std::sync::atomic::Ordering::Relaxed));
+                let room_seq = Some(
+                    room.last_room_seq
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                );
                 for user in room.users().await.into_iter().chain(room.monitors().await) {
                     let lang = user.lang.clone();
                     let rating_part = rating
@@ -1202,8 +1199,11 @@ pub async fn select_chart(
                     args.set("rating", &rating_part);
                     args.set("updated", &updated_part);
                     let content = crate::l10n::translate_system(&lang, "chart-info-line", &args);
-                    user.try_send(ServerCommand::Message(Message::Chat { user: 0, content }), room_seq)
-                        .await;
+                    user.try_send(
+                        ServerCommand::Message(Message::Chat { user: 0, content }),
+                        room_seq,
+                    )
+                    .await;
                 }
             }
         }
@@ -1229,7 +1229,8 @@ pub async fn request_start(
     }
     // Check chart from snapshot.
     let has_chart = if let Some(server) = room.server.upgrade() {
-        server.room_snapshot(&room.id.to_string())
+        server
+            .room_snapshot(&room.id.to_string())
             .map(|s| s.chart.is_some())
             .unwrap_or(false)
     } else {
@@ -1335,10 +1336,19 @@ pub async fn played(
     user.server
         .room_commands
         .submit_result(
-            &user.server, &room.id.to_string(), user.id,
-            res.score, res.accuracy, res.perfect, res.good,
-            res.bad, res.miss, res.max_combo, res.full_combo,
-            res.std, res.std_score,
+            &user.server,
+            &room.id.to_string(),
+            user.id,
+            res.score,
+            res.accuracy,
+            res.perfect,
+            res.good,
+            res.bad,
+            res.miss,
+            res.max_combo,
+            res.full_combo,
+            res.std,
+            res.std_score,
             Some(deadline),
             origin.to_room_origin(),
         )

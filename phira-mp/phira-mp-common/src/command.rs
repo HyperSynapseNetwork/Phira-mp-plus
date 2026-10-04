@@ -246,16 +246,13 @@ pub enum Message {
         user: i32,
     },
     StartPlaying,
+    /// Official v1 packet shape. Detailed judgement counts are server-side
+    /// data and are intentionally not appended to this compatibility message.
     Played {
         user: i32,
         score: i32,
         accuracy: f32,
         full_combo: bool,
-        perfect: i32,
-        good: i32,
-        bad: i32,
-        miss: i32,
-        max_combo: i32,
     },
     GameEnd,
     Abort {

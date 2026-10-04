@@ -52,34 +52,17 @@ pub fn validate_config_key(value: &str) -> Result<(), String> {
 
 /// Default set of capabilities for plugins without a manifest.
 pub fn default_capabilities() -> HashSet<String> {
-    [
-        "state.read",
-        "send",
-        "ext",
-        "config",
-        "http",
-        "room.manage",
-        "admin",
-        "crypto",
-        "timer",
-        "tcp",
-        "room-state",
-        "handler",
-        "file.read",
-        "file.write",
-        "plugin.call",
-        "plugin.register",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect()
+    ["state.read", "send", "ext", "config", "timer", "room-state"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
 }
 
 /// Load the capability grant for a plugin.
 ///
 /// A sidecar named `<plugin>.capabilities.json` may contain either a JSON array
-/// or `{ "capabilities": [...] }`. Missing sidecars receive only the default,
-/// non-privileged set. Unknown capability names are rejected rather than
+/// or `{ "capabilities": [...] }`. Missing sidecars receive only the default
+/// read/messaging set. Unknown capability names are rejected rather than
 /// silently granted.
 pub fn load_manifest_capabilities(plugin_path: &str) -> Result<HashSet<String>, String> {
     let path = Path::new(plugin_path);
@@ -493,7 +476,10 @@ mod tests {
         assert_eq!(required_capability("uuid.v4"), None);
         assert_eq!(required_capability("admin.list"), Some("admin"));
         assert_eq!(required_capability("room.set_lock"), Some("room.manage"));
-        assert_eq!(required_capability("room.set_tournament"), Some("room.manage"));
+        assert_eq!(
+            required_capability("room.set_tournament"),
+            Some("room.manage")
+        );
         assert_eq!(required_capability("room.set_live"), Some("room.manage"));
         assert_eq!(required_capability("room.set_chart"), Some("room.manage"));
         assert_eq!(required_capability("ban.check"), Some("admin"));

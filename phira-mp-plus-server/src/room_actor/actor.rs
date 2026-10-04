@@ -11,9 +11,9 @@ use crate::persistence::message::PersistenceEvent;
 use crate::room::{InternalRoomState, PlayerLiveData, Room, RoomControlSnapshot};
 use crate::server::PlusServerState;
 use serde::{Deserialize, Serialize};
-use tracing::warn;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::warn;
 
 /// Debounce interval (ms) for RoomSnapshot persistence enqueues.
 /// After a state change, a debounce timer is started. If no further
@@ -86,24 +86,22 @@ impl RoomSnapshot {
                 _ => None,
             },
             results_keys: match &state.state.lifecycle {
-                InternalRoomState::Playing { results, .. } => {
-                    results.keys().copied().collect()
-                }
+                InternalRoomState::Playing { results, .. } => results.keys().copied().collect(),
                 _ => Vec::new(),
             },
             aborted_users: match &state.state.lifecycle {
-                InternalRoomState::Playing { aborted, .. } => {
-                    aborted.iter().copied().collect()
-                }
+                InternalRoomState::Playing { aborted, .. } => aborted.iter().copied().collect(),
                 _ => Vec::new(),
             },
             playing_users: match &state.state.lifecycle {
-                InternalRoomState::Playing { results, aborted } => {
-                    state.state.members.users.iter()
-                        .filter(|u| !results.contains_key(u) && !aborted.contains(u))
-                        .copied()
-                        .collect()
-                }
+                InternalRoomState::Playing { results, aborted } => state
+                    .state
+                    .members
+                    .users
+                    .iter()
+                    .filter(|u| !results.contains_key(u) && !aborted.contains(u))
+                    .copied()
+                    .collect(),
                 _ => Vec::new(),
             },
             members: state.state.members.clone(),
@@ -170,7 +168,12 @@ pub struct RoomState {
 
 impl RoomState {
     /// 构建 RoomSnapshot（供外部只读路径使用）。
-    pub fn to_snapshot(&self, room_id: &str, room_uuid: &str, created_at: i64) -> crate::room_actor::actor::RoomSnapshot {
+    pub fn to_snapshot(
+        &self,
+        room_id: &str,
+        room_uuid: &str,
+        created_at: i64,
+    ) -> crate::room_actor::actor::RoomSnapshot {
         crate::room_actor::actor::RoomSnapshot {
             room_id: room_id.to_string(),
             room_uuid: room_uuid.to_string(),
@@ -194,24 +197,21 @@ impl RoomState {
                 _ => None,
             },
             results_keys: match &self.lifecycle {
-                InternalRoomState::Playing { results, .. } => {
-                    results.keys().copied().collect()
-                }
+                InternalRoomState::Playing { results, .. } => results.keys().copied().collect(),
                 _ => Vec::new(),
             },
             aborted_users: match &self.lifecycle {
-                InternalRoomState::Playing { aborted, .. } => {
-                    aborted.iter().copied().collect()
-                }
+                InternalRoomState::Playing { aborted, .. } => aborted.iter().copied().collect(),
                 _ => Vec::new(),
             },
             playing_users: match &self.lifecycle {
-                InternalRoomState::Playing { results, aborted } => {
-                    self.members.users.iter()
-                        .filter(|u| !results.contains_key(u) && !aborted.contains(u))
-                        .copied()
-                        .collect()
-                }
+                InternalRoomState::Playing { results, aborted } => self
+                    .members
+                    .users
+                    .iter()
+                    .filter(|u| !results.contains_key(u) && !aborted.contains(u))
+                    .copied()
+                    .collect(),
                 _ => Vec::new(),
             },
             members: self.members.clone(),
@@ -258,12 +258,7 @@ pub struct RoomActorState {
 
 impl RoomActorState {
     /// Create a new `RoomActorState` from its constituent parts.
-    pub fn new(
-        room_id: String,
-        room_uuid: String,
-        state: RoomState,
-        created_at: i64,
-    ) -> Self {
+    pub fn new(room_id: String, room_uuid: String, state: RoomState, created_at: i64) -> Self {
         Self {
             room_id,
             room_uuid,
@@ -289,19 +284,26 @@ pub struct RoomActor {
 }
 
 impl RoomActor {
-    pub fn new(room: Arc<Room>, state: Arc<PlusServerState>) -> Self {
+    pub async fn new(room: Arc<Room>, state: Arc<PlusServerState>) -> Self {
         // Initialize actor state from Room fields (first-time population).
         let control = room.control_snapshot();
+        // Room::new installs the creator before the mailbox is created. Seed
+        // the actor from that registry so the first authoritative snapshot
+        // cannot lose the creator or any monitor attached during startup.
+        let users = room.users().await.into_iter().map(|user| user.id).collect();
+        let monitors = room
+            .monitors()
+            .await
+            .into_iter()
+            .map(|user| user.id)
+            .collect();
         let actor_state = RoomActorState::new(
             room.id.to_string(),
             room.uuid.to_string(),
             RoomState {
                 control,
                 lifecycle: InternalRoomState::SelectChart,
-                members: RoomMembers {
-                    users: Vec::new(),
-                    monitors: Vec::new(),
-                },
+                members: RoomMembers { users, monitors },
                 chart: None,
                 chart_name: None,
                 round: RoundInfo {
@@ -348,11 +350,19 @@ impl RoomActor {
     /// no oneshot reply, no `finish_command`. Only updates `player_data`.
     pub(super) async fn execute_telemetry(&mut self, command: RoomActorCommand) {
         match command {
-            RoomActorCommand::TelemetryTouches { room_id: _, user_id, touches } => {
+            RoomActorCommand::TelemetryTouches {
+                room_id: _,
+                user_id,
+                touches,
+            } => {
                 let entry = self.actor_state.player_data.entry(user_id).or_default();
                 entry.push_touches(&touches);
             }
-            RoomActorCommand::TelemetryJudges { room_id: _, user_id, judges } => {
+            RoomActorCommand::TelemetryJudges {
+                room_id: _,
+                user_id,
+                judges,
+            } => {
                 let entry = self.actor_state.player_data.entry(user_id).or_default();
                 entry.push_judges(&judges);
             }
@@ -364,8 +374,8 @@ impl RoomActor {
     /// All commands go through execute_with_actor which writes actor_state.
     /// The snapshot cache is updated directly after execution.
     pub(super) async fn execute_command(&mut self, command: RoomActorCommand) -> bool {
-        use super::handler::RoomCommandHandler;
         use super::context::RoomCommandContext;
+        use super::handler::RoomCommandHandler;
         use super::lifecycle::DefaultRoomLifecycle;
 
         let room = Arc::clone(&self.room);
@@ -395,7 +405,8 @@ impl RoomActor {
                 let room_id = self.room.id.to_string();
                 let snapshot = self.latest_snapshot.clone();
                 self.snapshot_debounce_handle = Some(tokio::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(ROOM_SNAPSHOT_DEBOUNCE_MS)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(ROOM_SNAPSHOT_DEBOUNCE_MS))
+                        .await;
                     let room_id_for_msg = room_id.clone();
                     if let Ok(payload) = serde_json::to_value(&snapshot) {
                         if let Err(e) = persistence

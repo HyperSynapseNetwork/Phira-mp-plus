@@ -49,7 +49,7 @@ PMP → wasmtime (component model)
     → quarantine 故障隔离
 ```
 
-插件通过 WIT ABI v2 定义 host API，每插件独立 capability 声明。
+插件通过 WIT ABI v3 定义 host API，每插件独立 capability 声明。
 
 ## 关键不变量
 
