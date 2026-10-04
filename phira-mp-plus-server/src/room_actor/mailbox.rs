@@ -1,9 +1,6 @@
 //! Mailbox-backed routing for room commands.
 
-use super::{
-    actor::RoomActor, command::RoomActorCommand,
-    RoomCommandGateway, RoomCommandResult,
-};
+use super::{actor::RoomActor, command::RoomActorCommand, RoomCommandGateway, RoomCommandResult};
 use crate::room::InternalRoomState;
 use crate::server::PlusServerState;
 use phira_mp_common::ServerCommand;
@@ -92,7 +89,8 @@ impl RoomCommandGateway {
             // 审计 P0: 独立 telemetry channel，容量 2× control 以应对高频 Touch/Judge。
             let telemetry_cap = cap * 2;
             let (telemetry_tx, telemetry_rx) = mpsc::channel::<RoomActorCommand>(telemetry_cap);
-            let (monitor_tx, monitor_rx) = broadcast::channel::<ServerCommand>(MONITOR_TELEMETRY_CAPACITY);
+            let (monitor_tx, monitor_rx) =
+                broadcast::channel::<ServerCommand>(MONITOR_TELEMETRY_CAPACITY);
             mailboxes.insert(
                 room_id.to_string(),
                 super::RoomMailboxEntry {
@@ -128,7 +126,7 @@ impl RoomCommandGateway {
         crate::supervisor_actor::spawn_named(
             format!("room-mailbox-{worker_room_id}"),
             async move {
-                let mut actor = RoomActor::new(room, state.clone());
+                let mut actor = RoomActor::new(room, state.clone()).await;
                 gateway.store_snapshot_if_current(
                     &worker_room_id,
                     worker_room_uuid.clone(),
@@ -405,34 +403,42 @@ async fn run_lifecycle_maintenance(
     // Collect current member IDs from actor state (authoritative).
     let current_ids: std::collections::HashSet<i32> = {
         let members = &as_.state.members;
-        members.users.iter().chain(members.monitors.iter()).copied().collect()
+        members
+            .users
+            .iter()
+            .chain(members.monitors.iter())
+            .copied()
+            .collect()
     };
     as_.player_data.retain(|&k, _| current_ids.contains(&k));
     as_.display_names.retain(|&k, _| current_ids.contains(&k));
 
     // 准备倒计时：检查是否超时（赛事模式由 PPB 编排开赛，禁用自动开赛）
     if !as_.state.control.tournament {
-    if let InternalRoomState::WaitForReady { .. } = &as_.state.lifecycle {
-        if let Some(started_at) = as_.state.ready_countdown_started_at {
-            let elapsed = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0) - started_at;
-            let timeout_ms = (actor.state.config.ready_countdown_secs.max(10) * 1000) as i64;
-            if elapsed >= timeout_ms {
-                // 超时 —— 强制开赛
-                let room = Arc::clone(&actor.room);
-                let lc = crate::room_actor::lifecycle::DefaultRoomLifecycle::new(
-                    room,
-                    Arc::clone(&actor.state),
-                );
-                crate::room_actor::handler::force_start_playing(
-                    &lc, &mut as_.state,
-                    std::time::Instant::now() + RoomCommandGateway::COMMAND_TIMEOUT,
-                ).await;
+        if let InternalRoomState::WaitForReady { .. } = &as_.state.lifecycle {
+            if let Some(started_at) = as_.state.ready_countdown_started_at {
+                let elapsed = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0)
+                    - started_at;
+                let timeout_ms = (actor.state.config.ready_countdown_secs.max(10) * 1000) as i64;
+                if elapsed >= timeout_ms {
+                    // 超时 —— 强制开赛
+                    let room = Arc::clone(&actor.room);
+                    let lc = crate::room_actor::lifecycle::DefaultRoomLifecycle::new(
+                        room,
+                        Arc::clone(&actor.state),
+                    );
+                    crate::room_actor::handler::force_start_playing(
+                        &lc,
+                        &mut as_.state,
+                        std::time::Instant::now() + RoomCommandGateway::COMMAND_TIMEOUT,
+                    )
+                    .await;
+                }
             }
         }
-    }
     } // end !tournament（赛事模式禁用准备倒计时自动开赛）
 
     // 对局超时：检查 Playing 状态下是否超过截止时间
@@ -449,9 +455,7 @@ async fn run_lifecycle_maintenance(
                     room,
                     Arc::clone(&actor.state),
                 );
-                crate::room_actor::handler::force_end_playing(
-                    &lc, &mut as_.state,
-                ).await;
+                crate::room_actor::handler::force_end_playing(&lc, &mut as_.state).await;
             }
         }
     }
@@ -468,7 +472,8 @@ async fn run_lifecycle_maintenance(
                 room,
                 Arc::clone(&actor.state),
             );
-            let due: Vec<i32> = as_.state
+            let due: Vec<i32> = as_
+                .state
                 .progress_subscribers
                 .iter()
                 .filter(|(_, &last)| now - last >= 30_000)
@@ -558,7 +563,10 @@ mod tests {
             stripped: phira_mp_common::StrippedRoomState::SelectingChart,
             round_id: None,
             ready_set: None,
-            members: super::super::actor::RoomMembers { users: Vec::new(), monitors: Vec::new() },
+            members: super::super::actor::RoomMembers {
+                users: Vec::new(),
+                monitors: Vec::new(),
+            },
             results_keys: Vec::new(),
             aborted_users: Vec::new(),
             playing_users: Vec::new(),

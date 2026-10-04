@@ -15,9 +15,7 @@
 //! mutations through RoomActorCommand variants via RoomCommandGateway.
 
 use crate::plugin::{JudgeEventItem, PluginManager, TouchEventPoint};
-use phira_mp_common::{
-    Message, PartialRoomData, RoomEvent, RoomId, RoundData, ServerCommand,
-};
+use phira_mp_common::{Message, PartialRoomData, RoomEvent, RoomId, RoundData, ServerCommand};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{
@@ -338,7 +336,8 @@ impl Room {
 
     pub fn is_live(&self) -> bool {
         if let Some(server) = self.server.upgrade() {
-            server.room_snapshot(&self.id.to_string())
+            server
+                .room_snapshot(&self.id.to_string())
                 .map(|s| s.live)
                 .unwrap_or(false)
         } else {
@@ -372,11 +371,13 @@ impl Room {
         let room_seq = Some(self.last_room_seq.load(Ordering::Relaxed));
         if let ServerCommand::Message(msg) = &cmd {
             if matches!(msg, Message::Chat { .. }) {
-                let mut buf = self.chat_history.write().await;
-                if buf.len() >= self.chat_history_cap {
-                    buf.pop_front();
+                if self.chat_history_cap > 0 {
+                    let mut buf = self.chat_history.write().await;
+                    if buf.len() >= self.chat_history_cap {
+                        buf.pop_front();
+                    }
+                    buf.push_back(msg.clone());
                 }
-                buf.push_back(msg.clone());
             }
         }
         for session in self.users().await.into_iter().chain(self.monitors().await) {
@@ -388,11 +389,13 @@ impl Room {
         let room_seq = Some(self.last_room_seq.load(Ordering::Relaxed));
         if let ServerCommand::Message(msg) = &cmd {
             if matches!(msg, Message::Chat { .. }) {
-                let mut buf = self.chat_history.write().await;
-                if buf.len() >= self.chat_history_cap {
-                    buf.pop_front();
+                if self.chat_history_cap > 0 {
+                    let mut buf = self.chat_history.write().await;
+                    if buf.len() >= self.chat_history_cap {
+                        buf.pop_front();
+                    }
+                    buf.push_back(msg.clone());
                 }
-                buf.push_back(msg.clone());
             }
         }
         for session in self.users().await.into_iter().chain(self.monitors().await) {
@@ -437,14 +440,19 @@ impl Room {
         let room_seq = Some(self.last_room_seq.load(Ordering::Relaxed));
         for user in users.iter().chain(monitors.iter()) {
             let content = translate(&user.lang);
-            user.try_send(ServerCommand::Message(Message::Chat { user: 0, content }), room_seq).await;
+            user.try_send(
+                ServerCommand::Message(Message::Chat { user: 0, content }),
+                room_seq,
+            )
+            .await;
         }
     }
 
     /// Broadcast a localized system message with no args.
     pub async fn send_system_msg_simple(&self, key: &str) {
         let key = key.to_owned();
-        self.send_system_msg(&|lang| crate::l10n::try_translate(&lang.0, &key)).await;
+        self.send_system_msg(&|lang| crate::l10n::try_translate(&lang.0, &key))
+            .await;
     }
 
     /// Broadcast a `PartialRoomData` update to the monitoring infrastructure.
@@ -579,10 +587,31 @@ impl Room {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use phira_mp_common::{Message, ServerCommand};
 
     #[test]
     fn default_snapshot_fallback() {
         // control_snapshot on a room with no actor returns sensible defaults.
         // This is exercised indirectly via construction flows.
+    }
+
+    #[tokio::test]
+    async fn zero_chat_history_capacity_does_not_retain_messages() {
+        let room = Room::new_empty(
+            "history-zero".to_string().try_into().unwrap(),
+            None,
+            std::sync::Weak::new(),
+            4,
+            None,
+            0,
+            0,
+        );
+        room.broadcast(ServerCommand::Message(Message::Chat {
+            user: 1,
+            content: "not retained".to_string(),
+        }))
+        .await;
+        assert!(room.chat_history.read().await.is_empty());
     }
 }

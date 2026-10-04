@@ -1,6 +1,6 @@
 //! Plugin ABI boundary.
 //!
-//! WIT/component-model ABI v2 is the only supported ABI. The legacy JSON-memory
+//! WIT/component-model ABI v3 is the only supported ABI. The legacy JSON-memory
 //! bridge (abi-json-v1) has been removed. The ABI is stable (no longer a migration phase).
 
 mod plan;

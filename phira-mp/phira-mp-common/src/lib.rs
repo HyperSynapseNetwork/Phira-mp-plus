@@ -6,6 +6,11 @@ pub use command::*;
 
 use anyhow::Result;
 
+/// Official Phira-mp wire protocol version supported by this workspace.
+/// Extensions must use a separately negotiated version; v1 keeps the exact
+/// upstream packet layouts.
+pub const PROTOCOL_VERSION: u8 = 1;
+
 pub fn encode_packet(payload: &impl BinaryData, vec: &mut Vec<u8>) -> Result<()> {
     BinaryWriter::new(vec).write(payload)?;
     Ok(())
@@ -132,6 +137,13 @@ mod stream_impl {
             } else {
                 read.read_u8().await?
             };
+            if version != crate::PROTOCOL_VERSION {
+                return Err(anyhow!(
+                    "unsupported Phira-mp protocol version {}; expected {}",
+                    version,
+                    crate::PROTOCOL_VERSION
+                ));
+            }
 
             let (send_tx, mut send_rx) = mpsc::channel(1024);
             let send_tx = Arc::new(StreamSender { tx: send_tx });
@@ -142,7 +154,13 @@ mod stream_impl {
                     while let Some(outbound) = send_rx.recv().await {
                         let Outbound { payload, flushed } = outbound;
                         buffer.clear();
-                        encode_packet(&payload, &mut buffer).expect("encode_packet failed");
+                        if let Err(err) = encode_packet(&payload, &mut buffer) {
+                            error!(?err, "failed to encode outbound packet");
+                            if let Some(flushed) = flushed {
+                                let _ = flushed.send(Err(err.to_string()));
+                            }
+                            break;
+                        }
                         trace!("sending {} bytes ({payload:?}): {buffer:?}", buffer.len());
 
                         let mut x = buffer.len() as u32;
@@ -197,7 +215,7 @@ mod stream_impl {
                 #[allow(clippy::read_zero_byte_vec)]
                 async move {
                     let mut buffer = Vec::new();
-                    loop {
+                    let result = loop {
                         let mut len = 0u32;
                         let mut pos = 0;
                         loop {
@@ -224,7 +242,7 @@ mod stream_impl {
                             Ok(val) => val,
                             Err(err) => {
                                 warn!("invalid packet: {err:?} {buffer:?}");
-                                break;
+                                break Err(anyhow!("invalid packet: {err}"));
                             }
                         };
                         trace!("decodes to {payload:?}");
@@ -232,8 +250,8 @@ mod stream_impl {
                             .send(payload)
                             .await
                             .map_err(|_| anyhow!("command handler stopped"))?;
-                    }
-                    Ok(())
+                    };
+                    result
                 }
             });
 

@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 #[cfg(feature = "plugin-system")]
 use std::collections::HashSet;
-use std::path::Path;
 use std::future::Future;
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock as StdRwLock};
@@ -207,12 +207,13 @@ impl PluginSlotInner {
         loop {
             match self.try_execution() {
                 Ok(permit) => return Ok(permit),
-                Err("plugin already has an in-flight call") => {
+                Err("plugin has reached maximum concurrent calls") => {
                     if std::time::Instant::now() >= deadline {
                         return Err("plugin execution slot wait timed out");
                     }
                     std::thread::sleep(std::time::Duration::from_millis(2));
                 }
+                Err("plugin concurrency race") => continue,
                 Err(reason) => return Err(reason),
             }
         }
@@ -391,7 +392,8 @@ pub struct PluginManager {
     #[cfg(feature = "plugin-system")]
     wasm_services: Arc<crate::wasm_host::WasmPluginServices>,
     /// TCP actor command sender, set after the actor is started.
-    plugin_tcp_tx: tokio::sync::Mutex<Option<tokio::sync::mpsc::Sender<crate::plugin_tcp::PluginTcpCommand>>>,
+    plugin_tcp_tx:
+        tokio::sync::Mutex<Option<tokio::sync::mpsc::Sender<crate::plugin_tcp::PluginTcpCommand>>>,
     /// Tracks which handlers are owned by each plugin (method name list per plugin).
     /// Used by remove_plugin to clean up the shared handler registry.
     handler_owners: Arc<Mutex<HashMap<String, Vec<String>>>>,
@@ -499,7 +501,10 @@ impl PluginManager {
                     PluginDispatchMessage::Event(e) => e.kind(),
                     _ => "control",
                 };
-                warn!(kind, "plugin event queue full, dropping event to avoid blocking core protocol");
+                warn!(
+                    kind,
+                    "plugin event queue full, dropping event to avoid blocking core protocol"
+                );
             }
             Err(TrySendError::Closed(msg)) => {
                 let kind = match &msg {
@@ -624,7 +629,10 @@ impl PluginManager {
     }
 
     /// Set the TCP actor command sender after the TCP actor is started.
-    pub fn set_plugin_tcp_tx(&self, tx: tokio::sync::mpsc::Sender<crate::plugin_tcp::PluginTcpCommand>) {
+    pub fn set_plugin_tcp_tx(
+        &self,
+        tx: tokio::sync::mpsc::Sender<crate::plugin_tcp::PluginTcpCommand>,
+    ) {
         if let Ok(mut guard) = self.plugin_tcp_tx.try_lock() {
             *guard = Some(tx);
         }
@@ -635,7 +643,9 @@ impl PluginManager {
     pub fn set_tcp_callback(
         &self,
         cb: Arc<
-            dyn Fn(String, serde_json::Value) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
+            dyn Fn(String, serde_json::Value) -> Pin<Box<dyn Future<Output = ()> + Send>>
+                + Send
+                + Sync,
         >,
     ) {
         #[cfg(feature = "plugin-system")]
@@ -778,7 +788,9 @@ impl PluginManager {
                     "plugin requests concurrent execution"
                 );
             }
-            { slot.set_max_concurrent(meta.max_concurrent_calls); }
+            {
+                slot.set_max_concurrent(meta.max_concurrent_calls);
+            }
             self.wasm_services.register_plugin_runtime(&stable_id);
             self.plugins.write().await.push(slot);
             Ok(meta)
@@ -1043,13 +1055,13 @@ impl PluginManager {
         {
             if let Ok(tx_guard) = self.plugin_tcp_tx.try_lock() {
                 if let Some(ref tx) = *tx_guard {
-                    let (reply, rx) = std::sync::mpsc::channel();
-                    let _ = tx.try_send(crate::plugin_tcp::PluginTcpCommand::RemovePlugin {
+                    let (reply, _rx) = std::sync::mpsc::channel();
+                    if tx.try_send(crate::plugin_tcp::PluginTcpCommand::RemovePlugin {
                         plugin_id: plugin_name.clone(),
                         reply,
-                    });
-                    // Wait up to 5s for the TCP actor to clean up handles
-                    let _ = rx.recv_timeout(std::time::Duration::from_secs(5));
+                    }).is_err() {
+                        warn!(plugin = %plugin_name, "TCP cleanup command could not be queued during plugin removal");
+                    }
                 }
             }
         }
@@ -1093,8 +1105,9 @@ impl PluginManager {
                 removed_any = true;
             }
             if sidecar.exists() {
-                std::fs::remove_file(&sidecar)
-                    .map_err(|e| format!("remove capability sidecar '{}': {e}", sidecar.display()))?;
+                std::fs::remove_file(&sidecar).map_err(|e| {
+                    format!("remove capability sidecar '{}': {e}", sidecar.display())
+                })?;
                 removed_any = true;
             }
             if data_dir.exists() {

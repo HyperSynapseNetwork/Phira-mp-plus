@@ -113,11 +113,32 @@ fn round_trip_ok<T: BinaryData + std::fmt::Debug>(val: &T) {
 fn client_command_discriminants() {
     assert_eq!(disc(&ClientCommand::Ping), 0);
     assert_eq!(disc(&ClientCommand::Authenticate { token: varc("x") }), 1);
-    assert_eq!(disc(&ClientCommand::Chat { message: varc("hi") }), 2);
-    assert_eq!(disc(&ClientCommand::Touches { frames: Arc::new(vec![touch_frame()]) }), 3);
-    assert_eq!(disc(&ClientCommand::Judges { judges: Arc::new(vec![judge_event()]) }), 4);
+    assert_eq!(
+        disc(&ClientCommand::Chat {
+            message: varc("hi")
+        }),
+        2
+    );
+    assert_eq!(
+        disc(&ClientCommand::Touches {
+            frames: Arc::new(vec![touch_frame()])
+        }),
+        3
+    );
+    assert_eq!(
+        disc(&ClientCommand::Judges {
+            judges: Arc::new(vec![judge_event()])
+        }),
+        4
+    );
     assert_eq!(disc(&ClientCommand::CreateRoom { id: room("abc") }), 5);
-    assert_eq!(disc(&ClientCommand::JoinRoom { id: room("abc"), monitor: true }), 6);
+    assert_eq!(
+        disc(&ClientCommand::JoinRoom {
+            id: room("abc"),
+            monitor: true
+        }),
+        6
+    );
     assert_eq!(disc(&ClientCommand::LeaveRoom), 7);
     assert_eq!(disc(&ClientCommand::LockRoom { lock: true }), 8);
     assert_eq!(disc(&ClientCommand::CycleRoom { cycle: true }), 9);
@@ -127,20 +148,54 @@ fn client_command_discriminants() {
     assert_eq!(disc(&ClientCommand::CancelReady), 13);
     assert_eq!(disc(&ClientCommand::Played { id: 2 }), 14);
     assert_eq!(disc(&ClientCommand::Abort), 15);
-    assert_eq!(disc(&ClientCommand::ConsoleAuthenticate { token: varc("y") }), 16);
-    assert_eq!(disc(&ClientCommand::RoomMonitorAuthenticate { key: vec![1, 2, 3] }), 17);
+    assert_eq!(
+        disc(&ClientCommand::ConsoleAuthenticate { token: varc("y") }),
+        16
+    );
+    assert_eq!(
+        disc(&ClientCommand::RoomMonitorAuthenticate { key: vec![1, 2, 3] }),
+        17
+    );
     assert_eq!(disc(&ClientCommand::QueryRoomInfo), 18);
-    assert_eq!(disc(&ClientCommand::GameMonitorAuthenticate { token: varc("z") }), 19);
+    assert_eq!(
+        disc(&ClientCommand::GameMonitorAuthenticate { token: varc("z") }),
+        19
+    );
 }
 
 #[test]
 fn message_discriminants() {
-    assert_eq!(disc(&Message::Chat { user: 7, content: "hi".into() }), 0);
+    assert_eq!(
+        disc(&Message::Chat {
+            user: 7,
+            content: "hi".into()
+        }),
+        0
+    );
     assert_eq!(disc(&Message::CreateRoom { user: 1 }), 1);
-    assert_eq!(disc(&Message::JoinRoom { user: 1, name: "alice".into() }), 2);
-    assert_eq!(disc(&Message::LeaveRoom { user: 1, name: "alice".into() }), 3);
+    assert_eq!(
+        disc(&Message::JoinRoom {
+            user: 1,
+            name: "alice".into()
+        }),
+        2
+    );
+    assert_eq!(
+        disc(&Message::LeaveRoom {
+            user: 1,
+            name: "alice".into()
+        }),
+        3
+    );
     assert_eq!(disc(&Message::NewHost { user: 1 }), 4);
-    assert_eq!(disc(&Message::SelectChart { user: 1, name: "c".into(), id: 5 }), 5);
+    assert_eq!(
+        disc(&Message::SelectChart {
+            user: 1,
+            name: "c".into(),
+            id: 5
+        }),
+        5
+    );
     assert_eq!(disc(&Message::GameStart { user: 1 }), 6);
     assert_eq!(disc(&Message::Ready { user: 1 }), 7);
     assert_eq!(disc(&Message::CancelReady { user: 1 }), 8);
@@ -152,11 +207,6 @@ fn message_discriminants() {
             score: 2,
             accuracy: 3.5,
             full_combo: true,
-            perfect: 4,
-            good: 5,
-            bad: 6,
-            miss: 7,
-            max_combo: 8,
         }),
         11
     );
@@ -170,7 +220,10 @@ fn message_discriminants() {
 fn server_command_discriminants() {
     assert_eq!(disc(&ServerCommand::Pong), 0);
     assert_eq!(
-        disc(&ServerCommand::Authenticate(Ok((user(1, "alice", false), None)))),
+        disc(&ServerCommand::Authenticate(Ok((
+            user(1, "alice", false),
+            None
+        )))),
         1
     );
     assert_eq!(disc(&ServerCommand::Chat(Ok(()))), 2);
@@ -188,8 +241,17 @@ fn server_command_discriminants() {
         }),
         4
     );
-    assert_eq!(disc(&ServerCommand::Message(Message::Chat { user: 7, content: "hi".into() })), 5);
-    assert_eq!(disc(&ServerCommand::ChangeState(RoomState::WaitingForReady)), 6);
+    assert_eq!(
+        disc(&ServerCommand::Message(Message::Chat {
+            user: 7,
+            content: "hi".into()
+        })),
+        5
+    );
+    assert_eq!(
+        disc(&ServerCommand::ChangeState(RoomState::WaitingForReady)),
+        6
+    );
     assert_eq!(disc(&ServerCommand::ChangeHost(true)), 7);
     assert_eq!(disc(&ServerCommand::CreateRoom(Ok(()))), 8);
     assert_eq!(
@@ -200,7 +262,10 @@ fn server_command_discriminants() {
         }))),
         9
     );
-    assert_eq!(disc(&ServerCommand::OnJoinRoom(user(1, "alice", false))), 10);
+    assert_eq!(
+        disc(&ServerCommand::OnJoinRoom(user(1, "alice", false))),
+        10
+    );
     assert_eq!(disc(&ServerCommand::LeaveRoom(Ok(()))), 11);
     assert_eq!(disc(&ServerCommand::LockRoom(Ok(()))), 12);
     assert_eq!(disc(&ServerCommand::CycleRoom(Ok(()))), 13);
@@ -211,10 +276,19 @@ fn server_command_discriminants() {
     assert_eq!(disc(&ServerCommand::Played(Ok(()))), 18);
     assert_eq!(disc(&ServerCommand::Abort(Ok(()))), 19);
     assert_eq!(
-        disc(&ServerCommand::RoomResponse(Ok((HashMap::new(), HashMap::new())))),
+        disc(&ServerCommand::RoomResponse(Ok((
+            HashMap::new(),
+            HashMap::new()
+        )))),
         20
     );
-    assert_eq!(disc(&ServerCommand::RoomEvent(RoomEvent::LeaveRoom { room: room("abc"), user: 1 })), 21);
+    assert_eq!(
+        disc(&ServerCommand::RoomEvent(RoomEvent::LeaveRoom {
+            room: room("abc"),
+            user: 1
+        })),
+        21
+    );
     assert_eq!(disc(&ServerCommand::UserVisit(1)), 22);
 }
 
@@ -226,8 +300,12 @@ fn server_command_discriminants() {
 #[test]
 fn round_trip_all_client_commands() {
     round_trip_ok(&ClientCommand::Ping);
-    round_trip_ok(&ClientCommand::Authenticate { token: varc("token") });
-    round_trip_ok(&ClientCommand::Chat { message: varc("hello world") });
+    round_trip_ok(&ClientCommand::Authenticate {
+        token: varc("token"),
+    });
+    round_trip_ok(&ClientCommand::Chat {
+        message: varc("hello world"),
+    });
     round_trip_ok(&ClientCommand::Touches {
         frames: Arc::new(vec![touch_frame(), touch_frame()]),
     });
@@ -248,7 +326,9 @@ fn round_trip_all_client_commands() {
     round_trip_ok(&ClientCommand::CancelReady);
     round_trip_ok(&ClientCommand::Played { id: 999 });
     round_trip_ok(&ClientCommand::Abort);
-    round_trip_ok(&ClientCommand::ConsoleAuthenticate { token: varc("console") });
+    round_trip_ok(&ClientCommand::ConsoleAuthenticate {
+        token: varc("console"),
+    });
     round_trip_ok(&ClientCommand::RoomMonitorAuthenticate {
         key: vec![0, 255, 128, 7],
     });
@@ -287,11 +367,6 @@ fn round_trip_all_messages() {
         score: 1234567,
         accuracy: 99.97,
         full_combo: true,
-        perfect: 111,
-        good: 22,
-        bad: 3,
-        miss: 4,
-        max_combo: 555,
     });
     round_trip_ok(&Message::GameEnd);
     round_trip_ok(&Message::Abort { user: 13 });
@@ -302,7 +377,10 @@ fn round_trip_all_messages() {
 #[test]
 fn round_trip_all_server_commands() {
     round_trip_ok(&ServerCommand::Pong);
-    round_trip_ok(&ServerCommand::Authenticate(Ok((user(1, "alice", true), Some(client_room_state())))));
+    round_trip_ok(&ServerCommand::Authenticate(Ok((
+        user(1, "alice", true),
+        Some(client_room_state()),
+    ))));
     round_trip_ok(&ServerCommand::Authenticate(Err("bad token".to_string())));
     round_trip_ok(&ServerCommand::Chat(Ok(())));
     round_trip_ok(&ServerCommand::Chat(Err("no permission".to_string())));
@@ -339,37 +417,40 @@ fn round_trip_all_server_commands() {
     round_trip_ok(&ServerCommand::CancelReady(Ok(())));
     round_trip_ok(&ServerCommand::Played(Ok(())));
     round_trip_ok(&ServerCommand::Abort(Ok(())));
-    round_trip_ok(&ServerCommand::RoomResponse(Ok(({
-        let mut rooms = HashMap::new();
-        let mut data = RoomData {
-            host: 1,
-            users: vec![1, 2],
-            lock: false,
-            cycle: true,
-            chart: Some(5),
-            state: StrippedRoomState::WaitingForReady,
-            rounds: vec![],
-        };
-        data.rounds.push(RoundData {
-            chart: 5,
-            records: vec![Record {
-                id: 1,
-                player: 1,
-                score: 100,
-                perfect: 10,
-                good: 2,
-                bad: 0,
-                miss: 1,
-                max_combo: 12,
-                accuracy: 98.5,
-                full_combo: true,
-                std: 1.0,
-                std_score: 2.5,
-            }],
-        });
-        rooms.insert(room("abc"), data);
-        rooms
-    }, HashMap::new()))));
+    round_trip_ok(&ServerCommand::RoomResponse(Ok((
+        {
+            let mut rooms = HashMap::new();
+            let mut data = RoomData {
+                host: 1,
+                users: vec![1, 2],
+                lock: false,
+                cycle: true,
+                chart: Some(5),
+                state: StrippedRoomState::WaitingForReady,
+                rounds: vec![],
+            };
+            data.rounds.push(RoundData {
+                chart: 5,
+                records: vec![Record {
+                    id: 1,
+                    player: 1,
+                    score: 100,
+                    perfect: 10,
+                    good: 2,
+                    bad: 0,
+                    miss: 1,
+                    max_combo: 12,
+                    accuracy: 98.5,
+                    full_combo: true,
+                    std: 1.0,
+                    std_score: 2.5,
+                }],
+            });
+            rooms.insert(room("abc"), data);
+            rooms
+        },
+        HashMap::new(),
+    ))));
     round_trip_ok(&ServerCommand::RoomEvent(RoomEvent::CreateRoom {
         room: room("abc"),
         data: RoomData {
@@ -389,6 +470,14 @@ fn round_trip_all_server_commands() {
     round_trip_ok(&ServerCommand::UserVisit(77));
 }
 
+#[test]
+fn rejects_overflowing_uleb_lengths() {
+    // Ten-byte ULEB128 with a payload bit outside u64 must be rejected rather
+    // than silently truncated at the shift-63 boundary.
+    let malformed = [0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02];
+    assert!(decode_packet::<Vec<u8>>(&malformed).is_err());
+}
+
 // ── 3. field layout golden (exact byte arrays) ─────────────────────────────────
 // Official-protocol wire-format pins (PMP44 §27/§33). Each byte is load-bearing.
 
@@ -404,9 +493,15 @@ fn golden_simple_packets() {
     assert_eq!(encode_bin(&Message::GameEnd), vec![0x0C]);
 
     // LockRoom { lock: true }: discriminant 8, then bool true.
-    assert_eq!(encode_bin(&ClientCommand::LockRoom { lock: true }), vec![0x08, 0x01]);
+    assert_eq!(
+        encode_bin(&ClientCommand::LockRoom { lock: true }),
+        vec![0x08, 0x01]
+    );
     // bool false is a distinct byte value.
-    assert_eq!(encode_bin(&ClientCommand::LockRoom { lock: false }), vec![0x08, 0x00]);
+    assert_eq!(
+        encode_bin(&ClientCommand::LockRoom { lock: false }),
+        vec![0x08, 0x00]
+    );
 
     // Authenticate { token: "x" }: disc 1, Varchar<32> = uleb(1) + 'x'.
     assert_eq!(
@@ -416,7 +511,9 @@ fn golden_simple_packets() {
 
     // Chat { message: "hi" }: disc 2, Varchar<200> = uleb(2) + "hi".
     assert_eq!(
-        encode_bin(&ClientCommand::Chat { message: varc("hi") }),
+        encode_bin(&ClientCommand::Chat {
+            message: varc("hi")
+        }),
         vec![0x02, 0x02, 0x68, 0x69]
     );
 
@@ -500,26 +597,27 @@ fn golden_authenticate_nested() {
     //     [0x01]                 is_host = true
     //     [0x00]                 is_ready = false
     //     [0x00]                 users HashMap len 0
-    let packet = ServerCommand::Authenticate(Ok((user(1, "alice", true), Some(client_room_state()))));
+    let packet =
+        ServerCommand::Authenticate(Ok((user(1, "alice", true), Some(client_room_state()))));
     assert_eq!(
         encode_bin(&packet),
         vec![
-            0x01,             // ServerCommand::Authenticate
-            0x01,             // Result::Ok
+            0x01, // ServerCommand::Authenticate
+            0x01, // Result::Ok
             0x01, 0x00, 0x00, 0x00, // UserInfo.id = 1
             0x05, 0x61, 0x6C, 0x69, 0x63, 0x65, // "alice"
-            0x01,             // monitor = true
-            0x01,             // Option::Some
+            0x01, // monitor = true
+            0x01, // Option::Some
             0x03, 0x61, 0x62, 0x63, // RoomId "abc"
-            0x00,             // RoomState::SelectChart
-            0x01,             // Option::Some
+            0x00, // RoomState::SelectChart
+            0x01, // Option::Some
             0x03, 0x00, 0x00, 0x00, // chart = 3
-            0x01,             // live
-            0x00,             // locked
-            0x01,             // cycle
-            0x01,             // is_host
-            0x00,             // is_ready
-            0x00,             // users (empty HashMap)
+            0x01, // live
+            0x00, // locked
+            0x01, // cycle
+            0x01, // is_host
+            0x00, // is_ready
+            0x00, // users (empty HashMap)
         ]
     );
 }

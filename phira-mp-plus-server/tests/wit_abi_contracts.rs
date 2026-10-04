@@ -535,10 +535,15 @@ fn default_capabilities_include_expected_set() {
     );
     assert!(caps.contains("send"), "default should include send");
     assert!(caps.contains("config"), "default should include config");
-    assert!(caps.contains("admin"), "default should include admin");
+    assert!(caps.contains("timer"), "default should include timer");
     assert!(
-        caps.contains("room.manage"),
-        "default should include room.manage"
+        caps.contains("room-state"),
+        "default should include room-state"
+    );
+    assert!(!caps.contains("admin"), "default must not include admin");
+    assert!(
+        !caps.contains("room.manage"),
+        "default must not include room.manage"
     );
 }
 
@@ -550,8 +555,8 @@ fn default_capabilities_covers_basic_plugin_needs() {
         "send",
         "ext",
         "config",
-        "file.read",
-        "file.write",
+        "timer",
+        "room-state",
     ];
     for cap in &essentials {
         assert!(caps.contains(*cap), "default should contain {cap}");

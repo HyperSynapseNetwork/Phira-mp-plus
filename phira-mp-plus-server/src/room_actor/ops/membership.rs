@@ -33,7 +33,6 @@ impl RoomCommandGateway {
         .into_untyped()
     }
 
-
     /// Close and remove a room.
     pub async fn close_room(
         &self,
@@ -57,7 +56,6 @@ impl RoomCommandGateway {
         .into_untyped()
     }
 
-
     // ── AddUser ────────────────────────────────────────────────────────────
 
     pub async fn add_user(
@@ -66,6 +64,7 @@ impl RoomCommandGateway {
         room_id: &str,
         user_id: i32,
         user_name: &str,
+        connection: Option<std::sync::Arc<crate::session::User>>,
         monitor: bool,
         deadline: Instant,
         origin: RoomOrigin,
@@ -78,16 +77,22 @@ impl RoomCommandGateway {
                 room_id: rid.clone(),
                 user_id,
                 user_name: uname,
+                connection,
                 monitor,
                 deadline,
                 origin,
                 reply,
             })
             .await;
-        self.finish_command(state, RoomCommandKind::AddUser.action(), room_id, started, result)
-            .into_untyped()
+        self.finish_command(
+            state,
+            RoomCommandKind::AddUser.action(),
+            room_id,
+            started,
+            result,
+        )
+        .into_untyped()
     }
-
 
     // ── RemoveUser ──────────────────────────────────────────────────────────
 
@@ -99,7 +104,8 @@ impl RoomCommandGateway {
         deadline: Option<Instant>,
         origin: RoomOrigin,
     ) -> Result<Value, String> {
-        let deadline = deadline.unwrap_or_else(|| Instant::now() + std::time::Duration::from_secs(30));
+        let deadline =
+            deadline.unwrap_or_else(|| Instant::now() + std::time::Duration::from_secs(30));
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
@@ -111,10 +117,15 @@ impl RoomCommandGateway {
                 reply,
             })
             .await;
-        self.finish_command(state, RoomCommandKind::RemoveUser.action(), room_id, started, result)
-            .into_untyped()
+        self.finish_command(
+            state,
+            RoomCommandKind::RemoveUser.action(),
+            room_id,
+            started,
+            result,
+        )
+        .into_untyped()
     }
-
 
     // ── SetLive ─────────────────────────────────────────────────────────────
 
@@ -134,10 +145,15 @@ impl RoomCommandGateway {
                 reply,
             })
             .await;
-        self.finish_command(state, RoomCommandKind::SetLive.action(), room_id, started, result)
-            .into_untyped()
+        self.finish_command(
+            state,
+            RoomCommandKind::SetLive.action(),
+            room_id,
+            started,
+            result,
+        )
+        .into_untyped()
     }
-
 
     // ── SetDegraded ─────────────────────────────────────────────────────────
 
@@ -158,8 +174,14 @@ impl RoomCommandGateway {
                 reply,
             })
             .await;
-        self.finish_command(state, RoomCommandKind::SetDegraded.action(), room_id, started, result)
-            .into_untyped()
+        self.finish_command(
+            state,
+            RoomCommandKind::SetDegraded.action(),
+            room_id,
+            started,
+            result,
+        )
+        .into_untyped()
     }
 
     /// 赛事模式房间（房间级配置）。开启后禁用 PMP 默认交互行为，交 PPB 编排。
@@ -178,8 +200,14 @@ impl RoomCommandGateway {
                 reply,
             })
             .await;
-        self.finish_command(state, RoomCommandKind::SetTournament.action(), room_id, started, result)
-            .into_untyped()
+        self.finish_command(
+            state,
+            RoomCommandKind::SetTournament.action(),
+            room_id,
+            started,
+            result,
+        )
+        .into_untyped()
     }
 
     // ── CheckAllReady (fire-and-forget) ────────────────────────────────────
@@ -207,5 +235,4 @@ impl RoomCommandGateway {
         let _ = tx.send(cmd).await;
         let _ = state; // 与其它 gateway 方法保持签名一致（room 校验用 state）
     }
-
 }

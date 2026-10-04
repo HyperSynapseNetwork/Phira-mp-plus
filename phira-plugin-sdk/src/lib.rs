@@ -7,7 +7,7 @@
 //! # Usage
 //!
 //! ```ignore
-//! phira_plugin_sdk::wit_bindgen!("phira-plugin-v2");
+//! phira_plugin_sdk::wit_bindgen!("phira-plugin-v3");
 //!
 //! struct MyPlugin;
 //! impl PhiraPluginV2 for MyPlugin {
@@ -35,7 +35,7 @@
 ///
 /// Usage:
 /// ```ignore
-/// phira_plugin_sdk::wit_bindgen!("phira-plugin-v2");
+/// phira_plugin_sdk::wit_bindgen!("phira-plugin-v3");
 /// ```
 #[macro_export]
 macro_rules! wit_bindgen {

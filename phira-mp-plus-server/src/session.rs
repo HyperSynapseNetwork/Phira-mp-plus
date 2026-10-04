@@ -255,7 +255,8 @@ async fn rollback_failed_auth(
                 }
             }
             (Some((session_id, generation)), None) => {
-                user.clear_session_if_matches(*session_id, *generation).await;
+                user.clear_session_if_matches(*session_id, *generation)
+                    .await;
             }
             (None, _) => {}
         }
@@ -302,13 +303,15 @@ async fn rollback_failed_auth(
         let now = crate::db::now_ms();
         if let Err(e) = server
             .persistence_worker
-            .enqueue(crate::persistence::message::PersistenceEvent::UserDisconnect {
-                user_id,
-                user_name,
-                server_instance_id: crate::server_instance::current().to_string(),
-                session_id: session_id.clone(),
-                occurred_at: now,
-            })
+            .enqueue(
+                crate::persistence::message::PersistenceEvent::UserDisconnect {
+                    user_id,
+                    user_name,
+                    server_instance_id: crate::server_instance::current().to_string(),
+                    session_id: session_id.clone(),
+                    occurred_at: now,
+                },
+            )
             .await
         {
             warn!(user = user_id, kind = %e.kind(), "UserDisconnect enqueue failed during auth rollback");
@@ -640,18 +643,17 @@ async fn run_outbound_task(
                     // 拥塞）不得无限拖住 outbound task，否则后续 Critical 响应
                     // （JoinRoom(Ok)/CreateRoom(Ok)）被堵在队列后（audit §31）。
                     // 超时视为该客户端跟不上，关闭 Session 走 lost-connection 路径。
-                    match tokio::time::timeout(
-                        OUTBOUND_PACKET_SEND_TIMEOUT,
-                        send_tx.send(cmd),
-                    )
-                    .await
+                    match tokio::time::timeout(OUTBOUND_PACKET_SEND_TIMEOUT, send_tx.send(cmd))
+                        .await
                     {
                         Ok(Ok(())) => {}
                         Ok(Err(err)) => {
                             tracing::warn!(?err, "outbound task send failed (session teardown?)");
                         }
                         Err(_) => {
-                            tracing::warn!("outbound Packet send timed out; disconnecting slow client");
+                            tracing::warn!(
+                                "outbound Packet send timed out; disconnecting slow client"
+                            );
                             if let Some(session) = session_weak.get().and_then(Weak::upgrade) {
                                 session.stream.close();
                                 let _ = session.user.server.lost_con_tx.try_send(session.id);
@@ -886,14 +888,12 @@ impl SessionOutboundGate {
                 }
             }
         }
-        pending
-            .events
-            .push_back(GateEntry {
-                cmd,
-                seq,
-                class,
-                room_seq: entry_room_seq,
-            });
+        pending.events.push_back(GateEntry {
+            cmd,
+            seq,
+            class,
+            room_seq: entry_room_seq,
+        });
         pending.bytes += size;
         // PMP44 P1 §33: 每次入队/丢弃后更新认证屏障 gauge（事件数 / 字节粗估），
         // 提供预认证缓冲的实时观测视图。
@@ -1171,8 +1171,7 @@ impl Session {
             Arc::new(tokio::sync::OnceCell::<Arc<StreamSender<ServerCommand>>>::new());
         // PMP45 P0-M: 延迟绑定的 `Weak<Session>`——Session 在下方构造完成后
         // 写入。出站任务只经它关闭 origin Session，不持有强引用（避免引用环）。
-        let outbound_session_weak =
-            Arc::new(std::sync::OnceLock::<Weak<Session>>::new());
+        let outbound_session_weak = Arc::new(std::sync::OnceLock::<Weak<Session>>::new());
         let outbound_task_handle = tokio::spawn(run_outbound_task(
             outbound_rx,
             Arc::clone(&outbound_sender_ready),
@@ -3396,7 +3395,10 @@ mod tests {
         // Pong 是 Telemetry → 发送；ChangeHost(false) 是快照点后增量（room_seq 6）→ 发送。
         assert_eq!(sent.len(), 4, "only snapshot-covered events are cut over");
         assert!(matches!(sent[0], ServerCommand::Chat(Ok(()))));
-        assert!(matches!(sent[1], ServerCommand::Message(Message::GameStart { .. })));
+        assert!(matches!(
+            sent[1],
+            ServerCommand::Message(Message::GameStart { .. })
+        ));
         assert!(matches!(sent[2], ServerCommand::Pong));
         assert!(matches!(sent[3], ServerCommand::ChangeHost(false)));
     }
@@ -3445,7 +3447,10 @@ mod tests {
         // seq 3（room_seq 3 <= 3，快照已包含）；Chat（None）与 ChangeHost(false)
         // （room_seq 4 > 3，快照点后增量）必须发送。
         assert_eq!(sent.len(), 2, "only snapshot-covered events are cut over");
-        assert!(matches!(sent[0], ServerCommand::Message(Message::Chat { .. })));
+        assert!(matches!(
+            sent[0],
+            ServerCommand::Message(Message::Chat { .. })
+        ));
         assert!(matches!(sent[1], ServerCommand::ChangeHost(false)));
     }
 
@@ -3484,14 +3489,22 @@ mod tests {
         );
         assert_eq!(
             classify_command(&ServerCommand::Message(Message::Played {
-                user: 1, score: 0, accuracy: 0.0, full_combo: false,
-                perfect: 0, good: 0, bad: 0, miss: 0, max_combo: 0,
+                user: 1,
+                score: 0,
+                accuracy: 0.0,
+                full_combo: false,
             })),
             GateEventClass::NonSnapshot
         );
-        assert_eq!(classify_command(&ServerCommand::Chat(Ok(()))), GateEventClass::NonSnapshot);
+        assert_eq!(
+            classify_command(&ServerCommand::Chat(Ok(()))),
+            GateEventClass::NonSnapshot
+        );
         // 遥测。
-        assert_eq!(classify_command(&ServerCommand::Pong), GateEventClass::Telemetry);
+        assert_eq!(
+            classify_command(&ServerCommand::Pong),
+            GateEventClass::Telemetry
+        );
         assert_eq!(
             classify_command(&ServerCommand::Touches {
                 player: 1,
@@ -3509,19 +3522,24 @@ mod tests {
         // 放不下。遥测不会触发 overflow（coalesce），因此用 Chat 验证。
         let gate = SessionOutboundGate::new(8, 4, Duration::from_millis(8000));
         let sink = TestSink::default();
-        let dropped_before = ProtocolTrace::get().gate_control_overflow.load(Ordering::Relaxed);
+        let dropped_before = ProtocolTrace::get()
+            .gate_control_overflow
+            .load(Ordering::Relaxed);
 
         // 缓冲为空时入队超预算的语义事件：单事件即超预算 → overflowed。
-        assert!(gate
-            .try_send(
+        assert!(
+            gate.try_send(
                 &sink,
                 ServerCommand::Message(Message::Chat {
                     user: 1,
                     content: "x".repeat(100),
                 }),
             )
-            .await);
-        let dropped_after = ProtocolTrace::get().gate_control_overflow.load(Ordering::Relaxed);
+            .await
+        );
+        let dropped_after = ProtocolTrace::get()
+            .gate_control_overflow
+            .load(Ordering::Relaxed);
         assert!(
             dropped_after > dropped_before,
             "gate_control_overflow must increment"

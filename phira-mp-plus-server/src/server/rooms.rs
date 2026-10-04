@@ -328,10 +328,7 @@ impl PlusServerState {
     }
 
     /// Refresh room display metadata by room ID (background spawn).
-    async fn refresh_room_display_metadata_background_by_id(
-        self: &Arc<Self>,
-        room_id: &str,
-    ) {
+    async fn refresh_room_display_metadata_background_by_id(self: &Arc<Self>, room_id: &str) {
         let rooms = self.rooms.read().await;
         let rid: RoomId = match room_id.to_string().try_into() {
             Ok(id) => id,
@@ -455,6 +452,7 @@ impl PlusServerState {
                     &rid.to_string(),
                     target_id,
                     &user.name,
+                    Some(Arc::clone(&user)),
                     monitor,
                     admin_deadline,
                     None,
@@ -475,6 +473,7 @@ impl PlusServerState {
                             &old_room_val.id.to_string(),
                             target_id,
                             &user.name,
+                            Some(Arc::clone(&user)),
                             was_monitor,
                             admin_deadline,
                             None,
@@ -569,7 +568,8 @@ impl PlusServerState {
         }
         // ChangeHost 是状态告知（非响应），随 JoinRoom(Ok) flush 后经 FIFO 到达；
         // 作为告知传 None（cutover 不剔除）。
-        user.try_send(ServerCommand::ChangeHost(is_host), None).await;
+        user.try_send(ServerCommand::ChangeHost(is_host), None)
+            .await;
 
         // Step 8: Record history.
         let now = std::time::SystemTime::now()
@@ -601,13 +601,13 @@ impl PlusServerState {
         // Step 10: System message.
         {
             let uname = user.name.clone();
-            target_room.send_system_msg(
-                &|lang| {
+            target_room
+                .send_system_msg(&|lang| {
                     let mut a = fluent::FluentArgs::new();
                     a.set("name", &uname);
                     crate::l10n::translate_system(lang, "user-moved-to-room", &a)
-                },
-            ).await;
+                })
+                .await;
         }
 
         Ok(serde_json::json!({
@@ -622,9 +622,7 @@ impl PlusServerState {
     // ── Room hidden flag ─────────────────────────────────────────────
 
     pub async fn set_room_hidden(&self, room_id: &str, hidden: bool) -> Result<Value, String> {
-        self.room_commands
-            .set_hidden(self, room_id, hidden)
-            .await
+        self.room_commands.set_hidden(self, room_id, hidden).await
     }
 
     // ── Phira API endpoint ───────────────────────────────────────────

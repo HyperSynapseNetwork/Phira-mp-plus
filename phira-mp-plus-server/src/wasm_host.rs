@@ -2,7 +2,7 @@
 //!
 //! JSON bridge ABI (phira_init, phira_get_info, phira_cleanup, phira_on_event,
 //! phira_on_api) has been removed. All plugins must be WIT components targeting
-//! the phira-plugin-v2 world.
+//! the phira-plugin-v3 world.
 //!
 //! Guest exports (expected from every WIT plugin):
 //! - `init() -> result<_, string>`
@@ -40,8 +40,15 @@ pub struct WasmPluginServices {
     /// TCP event callback shared with PluginTcpActor. Dispatches
     /// tcp:accept / tcp:receive / tcp:disconnect / tcp:error events
     /// to the owning plugin via call_plugin_api.
-    pub tcp_callback:
-        Mutex<Option<Arc<dyn Fn(String, serde_json::Value) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>>>,
+    pub tcp_callback: Mutex<
+        Option<
+            Arc<
+                dyn Fn(String, serde_json::Value) -> Pin<Box<dyn Future<Output = ()> + Send>>
+                    + Send
+                    + Sync,
+            >,
+        >,
+    >,
     /// Tracks which handler methods each plugin has registered.
     /// Shared with PluginManager — do not write separately.
     pub handler_owners: Arc<Mutex<HashMap<String, Vec<String>>>>,
@@ -102,7 +109,9 @@ impl WasmPluginServices {
     pub fn set_tcp_callback(
         &self,
         cb: Arc<
-            dyn Fn(String, serde_json::Value) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
+            dyn Fn(String, serde_json::Value) -> Pin<Box<dyn Future<Output = ()> + Send>>
+                + Send
+                + Sync,
         >,
     ) {
         if let Ok(mut guard) = self.tcp_callback.lock() {
@@ -198,12 +207,18 @@ impl WitPluginComponent {
 
         let plugin_manager = Arc::clone(&server.plugin_manager);
         let forward_plugin = plugin_name.to_string();
-        let api_forward: Arc<dyn Fn(String, Vec<serde_json::Value>) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, String>> + Send>> + Send + Sync> = Arc::new(move |method, args| {
+        let api_forward: Arc<
+            dyn Fn(
+                    String,
+                    Vec<serde_json::Value>,
+                )
+                    -> Pin<Box<dyn Future<Output = Result<serde_json::Value, String>> + Send>>
+                + Send
+                + Sync,
+        > = Arc::new(move |method, args| {
             let pm = Arc::clone(&plugin_manager);
             let fp = forward_plugin.clone();
-            Box::pin(async move {
-                pm.call_plugin_api(&fp, &method, args).await
-            })
+            Box::pin(async move { pm.call_plugin_api(&fp, &method, args).await })
         });
 
         Ok(Arc::new(crate::wit_host::WitHostContext {
@@ -217,7 +232,10 @@ impl WitPluginComponent {
             http_timeout_secs: server.config.wasm_runtime.http_timeout_secs,
             http_max_body: server.config.wasm_runtime.max_http_response_bytes,
             http_allow_private_network: server.config.wasm_runtime.allow_private_network,
-            node_key: Arc::new(crate::crypto::NodeKey::from_secret(&phira_mp_common::generate_secret_key("node_key", 32).map_err(|e| format!("node key derivation: {e}"))?)),
+            node_key: Arc::new(crate::crypto::NodeKey::from_secret(
+                &phira_mp_common::generate_secret_key("node_key", 32)
+                    .map_err(|e| format!("node key derivation: {e}"))?,
+            )),
             timers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             timer_callback: None,
             tcp: server.plugin_tcp_tx.clone(),
@@ -254,10 +272,11 @@ impl WitPluginComponent {
         let component = wasmtime::component::Component::new(&engine, wasm_bytes)
             .map_err(|e| format!("component compile: {e}"))?;
         let mut linker = wasmtime::component::Linker::<WitHostState>::new(&engine);
-        wit_abi::PhiraPluginV3::add_to_linker::<WitHostState, wasmtime::component::HasSelf<crate::wit_host::WitPluginHost>>(
-            &mut linker,
-            |state: &mut WitHostState| &mut state.host,
-        ).map_err(|e| format!("linker setup: {e}"))?;
+        wit_abi::PhiraPluginV3::add_to_linker::<
+            WitHostState,
+            wasmtime::component::HasSelf<crate::wit_host::WitPluginHost>,
+        >(&mut linker, |state: &mut WitHostState| &mut state.host)
+        .map_err(|e| format!("linker setup: {e}"))?;
         let ctx = Self::build_context_from_services(&services, &plugin_name)?;
         Self::new_with_context(engine, component, linker, ctx, plugin_name, runtime)
     }
@@ -286,10 +305,11 @@ impl WitPluginComponent {
         let component = wasmtime::component::Component::new(&engine, wasm_bytes)
             .map_err(|e| format!("component compile: {e}"))?;
         let mut linker = wasmtime::component::Linker::<WitHostState>::new(&engine);
-        wit_abi::PhiraPluginV3::add_to_linker::<WitHostState, wasmtime::component::HasSelf<crate::wit_host::WitPluginHost>>(
-            &mut linker,
-            |state: &mut WitHostState| &mut state.host,
-        ).map_err(|e| format!("linker setup: {e}"))?;
+        wit_abi::PhiraPluginV3::add_to_linker::<
+            WitHostState,
+            wasmtime::component::HasSelf<crate::wit_host::WitPluginHost>,
+        >(&mut linker, |state: &mut WitHostState| &mut state.host)
+        .map_err(|e| format!("linker setup: {e}"))?;
         Self::new_with_context(engine, component, linker, ctx, plugin_name, runtime)
     }
 
@@ -567,13 +587,13 @@ mod tests {
     use crate::wasm_host_helpers;
 
     #[test]
-    fn default_capabilities_include_all() {
+    fn default_capabilities_are_least_privilege() {
         let caps = wasm_host_helpers::default_capabilities();
-        assert!(caps.contains("admin"), "default must include admin");
-        assert!(
-            caps.contains("room.manage"),
-            "default must include room.manage"
-        );
+        assert!(caps.contains("state.read"));
+        assert!(caps.contains("send"));
+        assert!(!caps.contains("admin"));
+        assert!(!caps.contains("room.manage"));
+        assert!(!caps.contains("http"));
     }
 
     #[test]
@@ -755,10 +775,15 @@ mod tests {
             c.call_init().unwrap();
             let result = c.call_api("host.api_call", &[serde_json::json!("admin.list")]);
             let v = result.expect("host.api_call should return Ok value (error encoded in JSON)");
-            // Default capabilities now include all permissions, so admin.list
-            // reaches the handler and fails with "no handler" rather than capability.
+            // The mock context explicitly grants all capabilities for this
+            // legacy fixture, so admin.list reaches the handler and fails with
+            // "no handler" rather than capability.
             assert!(
-                v.get("error").is_none() || !v["error"].as_str().unwrap_or("").contains("requires capability"),
+                v.get("error").is_none()
+                    || !v["error"]
+                        .as_str()
+                        .unwrap_or("")
+                        .contains("requires capability"),
                 "admin method should not be rejected by capability check"
             );
         }

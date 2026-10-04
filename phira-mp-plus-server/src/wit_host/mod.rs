@@ -87,7 +87,10 @@ mod wit_trait_impls {
 
         fn api_call(&mut self, method: String, args: Vec<types::JsonValue>) -> types::ApiResult {
             tracing::trace!(plugin = %self.plugin_name, %method, "api_call");
-            let args_serde: Vec<serde_json::Value> = args.iter().map(super::host::wit_json_value_to_serde).collect();
+            let args_serde: Vec<serde_json::Value> = args
+                .iter()
+                .map(super::host::wit_json_value_to_serde)
+                .collect();
             let args_serde =
                 match normalize_plugin_scoped_api_args(&method, &self.plugin_name, args_serde) {
                     Ok(args) => args,
@@ -206,7 +209,9 @@ mod wit_trait_impls {
                 return error;
             }
             match self.block_on_async(move |ctx| async move {
-                ctx.extensions.set_user_extra(user_id as i32, &key, value).await
+                ctx.extensions
+                    .set_user_extra(user_id as i32, &key, value)
+                    .await
             }) {
                 Ok(Ok(())) => types::ApiResult::Ok(types::JsonValue::Null),
                 Ok(Err(e)) | Err(e) => types::ApiResult::Error(e),
@@ -697,102 +702,173 @@ mod wit_trait_impls {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
             let (reply, rx) = std::sync::mpsc::channel();
-            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Connect { plugin_id: self.plugin_name.clone(), addr, reply })
-                .map_err(|e| format!("tcp connect failed: {e}"))?;
-            rx.recv_timeout(Duration::from_secs(5)).map_err(|e|
-                match e {
-                    std::sync::mpsc::RecvTimeoutError::Timeout => "tcp connect timed out".to_string(),
-                    std::sync::mpsc::RecvTimeoutError::Disconnected => "tcp connect reply lost".to_string(),
-                }
-            )?
+            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Connect {
+                plugin_id: self.plugin_name.clone(),
+                addr,
+                reply,
+            })
+            .map_err(|e| format!("tcp connect failed: {e}"))?;
+            rx.recv_timeout(Duration::from_secs(5))
+                .map_err(|e| match e {
+                    std::sync::mpsc::RecvTimeoutError::Timeout => {
+                        "tcp connect timed out".to_string()
+                    }
+                    std::sync::mpsc::RecvTimeoutError::Disconnected => {
+                        "tcp connect reply lost".to_string()
+                    }
+                })?
         }
 
         fn listen(&mut self, addr: String) -> Result<u64, String> {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
             let (reply, rx) = std::sync::mpsc::channel();
-            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Listen { plugin_id: self.plugin_name.clone(), addr, reply })
-                .map_err(|e| format!("tcp listen failed: {e}"))?;
-            rx.recv_timeout(Duration::from_secs(5)).map_err(|e|
-                match e {
-                    std::sync::mpsc::RecvTimeoutError::Timeout => "tcp listen timed out".to_string(),
-                    std::sync::mpsc::RecvTimeoutError::Disconnected => "tcp listen reply lost".to_string(),
-                }
-            )?
+            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Listen {
+                plugin_id: self.plugin_name.clone(),
+                addr,
+                reply,
+            })
+            .map_err(|e| format!("tcp listen failed: {e}"))?;
+            rx.recv_timeout(Duration::from_secs(5))
+                .map_err(|e| match e {
+                    std::sync::mpsc::RecvTimeoutError::Timeout => {
+                        "tcp listen timed out".to_string()
+                    }
+                    std::sync::mpsc::RecvTimeoutError::Disconnected => {
+                        "tcp listen reply lost".to_string()
+                    }
+                })?
         }
 
         fn send(&mut self, handle: u64, bytes: Vec<u8>) -> Result<(), String> {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
-            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Send { plugin_id: self.plugin_name.clone(), handle, bytes })
-                .map_err(|e| format!("tcp send failed: {e}"))
+            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Send {
+                plugin_id: self.plugin_name.clone(),
+                handle,
+                bytes,
+            })
+            .map_err(|e| format!("tcp send failed: {e}"))
         }
 
         fn close(&mut self, handle: u64) -> Result<(), String> {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
-            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Close { plugin_id: self.plugin_name.clone(), handle })
-                .map_err(|e| format!("tcp close failed: {e}"))
+            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Close {
+                plugin_id: self.plugin_name.clone(),
+                handle,
+            })
+            .map_err(|e| format!("tcp close failed: {e}"))
         }
 
         fn accept(&mut self, handle: u64) -> Result<Option<u64>, String> {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
             let (reply, rx) = std::sync::mpsc::channel();
-            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Accept { plugin_id: self.plugin_name.clone(), listener_handle: handle, reply })
-                .map_err(|e| format!("tcp accept failed: {e}"))?;
-            rx.recv_timeout(Duration::from_secs(5)).map_err(|e|
-                match e {
-                    std::sync::mpsc::RecvTimeoutError::Timeout => "tcp accept timed out".to_string(),
-                    std::sync::mpsc::RecvTimeoutError::Disconnected => "tcp accept reply lost".to_string(),
-                }
-            )?
+            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Accept {
+                plugin_id: self.plugin_name.clone(),
+                listener_handle: handle,
+                reply,
+            })
+            .map_err(|e| format!("tcp accept failed: {e}"))?;
+            rx.recv_timeout(Duration::from_secs(5))
+                .map_err(|e| match e {
+                    std::sync::mpsc::RecvTimeoutError::Timeout => {
+                        "tcp accept timed out".to_string()
+                    }
+                    std::sync::mpsc::RecvTimeoutError::Disconnected => {
+                        "tcp accept reply lost".to_string()
+                    }
+                })?
         }
 
         fn recv(&mut self, handle: u64, max_bytes: u32) -> Result<Option<Vec<u8>>, String> {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
             let (reply, rx) = std::sync::mpsc::channel();
-            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Recv { plugin_id: self.plugin_name.clone(), handle, max_bytes, reply })
-                .map_err(|e| format!("tcp recv failed: {e}"))?;
-            rx.recv_timeout(Duration::from_secs(5)).map_err(|e|
-                match e {
+            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Recv {
+                plugin_id: self.plugin_name.clone(),
+                handle,
+                max_bytes,
+                reply,
+            })
+            .map_err(|e| format!("tcp recv failed: {e}"))?;
+            rx.recv_timeout(Duration::from_secs(5))
+                .map_err(|e| match e {
                     std::sync::mpsc::RecvTimeoutError::Timeout => "tcp recv timed out".to_string(),
-                    std::sync::mpsc::RecvTimeoutError::Disconnected => "tcp recv reply lost".to_string(),
-                }
-            )?
+                    std::sync::mpsc::RecvTimeoutError::Disconnected => {
+                        "tcp recv reply lost".to_string()
+                    }
+                })?
         }
 
         fn peer_addr(&mut self, handle: u64) -> Result<String, String> {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
             let (reply, rx) = std::sync::mpsc::channel();
-            tx.try_send(crate::plugin_tcp::PluginTcpCommand::PeerAddr { plugin_id: self.plugin_name.clone(), handle, reply })
-                .map_err(|e| format!("tcp peer-addr failed: {e}"))?;
-            rx.recv_timeout(Duration::from_secs(5)).map_err(|e|
-                match e {
-                    std::sync::mpsc::RecvTimeoutError::Timeout => "tcp peer-addr timed out".to_string(),
-                    std::sync::mpsc::RecvTimeoutError::Disconnected => "tcp peer-addr reply lost".to_string(),
-                }
-            )?
+            tx.try_send(crate::plugin_tcp::PluginTcpCommand::PeerAddr {
+                plugin_id: self.plugin_name.clone(),
+                handle,
+                reply,
+            })
+            .map_err(|e| format!("tcp peer-addr failed: {e}"))?;
+            rx.recv_timeout(Duration::from_secs(5))
+                .map_err(|e| match e {
+                    std::sync::mpsc::RecvTimeoutError::Timeout => {
+                        "tcp peer-addr timed out".to_string()
+                    }
+                    std::sync::mpsc::RecvTimeoutError::Disconnected => {
+                        "tcp peer-addr reply lost".to_string()
+                    }
+                })?
         }
     }
 
     // ── phira-room-state ──
     impl wit::phira::plugin::phira_room_state::Host for WitPluginHost {
-        fn get_room_state(&mut self, room_id: String) -> Result<wit::phira::plugin::phira_room_state::RoomState, String> {
+        fn get_room_state(
+            &mut self,
+            room_id: String,
+        ) -> Result<wit::phira::plugin::phira_room_state::RoomState, String> {
             self.require_capability("room-state")?;
-            let v = self.ctx.state_query.call("rooms.by_name", &[serde_json::json!(room_id)])?;
+            let v = self
+                .ctx
+                .state_query
+                .call("rooms.by_name", &[serde_json::json!(room_id)])?;
             let data = extract_snapshot_data(&v)?;
 
-            let rid = data.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let room_uuid = data.get("uuid").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let rid = data
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let room_uuid = data
+                .get("uuid")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             let host_val = data.get("host").and_then(|v| v.as_i64()).unwrap_or(-1);
-            let host_id = if host_val >= 0 { Some(host_val as u32) } else { None };
-            let locked = data.get("locked").and_then(|v| v.as_bool()).unwrap_or(false);
-            let hidden = data.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false);
-            let player_count = data.get("player_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            let monitor_count = data.get("monitor_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let host_id = if host_val >= 0 {
+                Some(host_val as u32)
+            } else {
+                None
+            };
+            let locked = data
+                .get("locked")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let hidden = data
+                .get("hidden")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let player_count = data
+                .get("player_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let monitor_count = data
+                .get("monitor_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
 
             let players = build_room_players(data);
 
@@ -800,19 +876,36 @@ mod wit_trait_impls {
             let current_round = extract_current_round(data);
 
             Ok(wit::phira::plugin::phira_room_state::RoomState {
-                room_id: rid, room_uuid, host_id, locked, hidden,
-                player_count, monitor_count, players, current_round,
+                room_id: rid,
+                room_uuid,
+                host_id,
+                locked,
+                hidden,
+                player_count,
+                monitor_count,
+                players,
+                current_round,
             })
         }
 
-        fn get_room_players(&mut self, room_id: String) -> Result<Vec<wit::phira::plugin::phira_room_state::RoomPlayer>, String> {
+        fn get_room_players(
+            &mut self,
+            room_id: String,
+        ) -> Result<Vec<wit::phira::plugin::phira_room_state::RoomPlayer>, String> {
             self.require_capability("room-state")?;
-            let v = self.ctx.state_query.call("rooms.by_name", &[serde_json::json!(room_id)])?;
+            let v = self
+                .ctx
+                .state_query
+                .call("rooms.by_name", &[serde_json::json!(room_id)])?;
             let data = extract_snapshot_data(&v)?;
             Ok(build_room_players(data))
         }
 
-        fn get_player_status(&mut self, room_id: String, user_id: u32) -> Result<Option<wit::phira::plugin::phira_room_state::RoomPlayer>, String> {
+        fn get_player_status(
+            &mut self,
+            room_id: String,
+            user_id: u32,
+        ) -> Result<Option<wit::phira::plugin::phira_room_state::RoomPlayer>, String> {
             let players = self.get_room_players(room_id)?;
             Ok(players.into_iter().find(|p| p.user_id == user_id))
         }
@@ -820,11 +913,12 @@ mod wit_trait_impls {
         fn list_rooms(&mut self) -> Result<Vec<String>, String> {
             self.require_capability("room-state")?;
             let v = self.ctx.state_query.call("rooms.list", &[])?;
-            let rooms: Vec<serde_json::Value> = serde_json::from_value(v)
-                .map_err(|e| format!("list rooms parse error: {e}"))?;
+            let rooms: Vec<serde_json::Value> =
+                serde_json::from_value(v).map_err(|e| format!("list rooms parse error: {e}"))?;
             // Each room entry is a RoomSnapshot { name, data } — room ID is in data.id.
             // Hidden rooms are already filtered server-side by rooms.list.
-            let ids: Vec<String> = rooms.iter()
+            let ids: Vec<String> = rooms
+                .iter()
                 .filter_map(|r| {
                     r.get("data")
                         .and_then(|d| d.get("id"))
@@ -838,13 +932,19 @@ mod wit_trait_impls {
 
     // ── phira-handler ──
     impl wit::phira::plugin::phira_handler::Host for WitPluginHost {
-        fn register_handler(&mut self, desc: wit::phira::plugin::phira_handler::HandlerDescriptor) -> Result<(), String> {
+        fn register_handler(
+            &mut self,
+            desc: wit::phira::plugin::phira_handler::HandlerDescriptor,
+        ) -> Result<(), String> {
             self.require_capability("handler")?;
             let method = desc.method.clone();
             if method.is_empty() || method.len() > 128 {
                 return Err("handler method name must be 1-128 chars".to_string());
             }
-            if !method.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == ':') {
+            if !method
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == ':')
+            {
                 return Err("handler method name contains invalid characters".to_string());
             }
             // Reject reserved "phira:" namespace
@@ -869,18 +969,27 @@ mod wit_trait_impls {
                 request_schema: desc.request_schema,
                 response_schema: desc.response_schema,
             };
-            let mut registry = self.ctx.api_handlers.lock()
+            let mut registry = self
+                .ctx
+                .api_handlers
+                .lock()
                 .map_err(|e| format!("handler registry lock: {e}"))?;
             registry.insert(method.clone(), registered);
 
             // Register in shared PluginManager registry with plugin_name prefix
             // to avoid silent override of another plugin's handler.
             let shared_key = format!("{}.{}", self.plugin_name, method);
-            if let (Some(ref shared), Some(ref forward)) = (&self.ctx.services_handlers, &self.ctx.api_forward) {
+            if let (Some(ref shared), Some(ref forward)) =
+                (&self.ctx.services_handlers, &self.ctx.api_forward)
+            {
                 {
-                    let sh = shared.lock().map_err(|e| format!("handler registry lock: {e}"))?;
+                    let sh = shared
+                        .lock()
+                        .map_err(|e| format!("handler registry lock: {e}"))?;
                     if sh.contains_key(&shared_key) {
-                        return Err(format!("handler method '{method}' is already registered by another plugin"));
+                        return Err(format!(
+                            "handler method '{method}' is already registered by another plugin"
+                        ));
                     }
                 }
                 let method_clone = method.clone();
@@ -888,9 +997,7 @@ mod wit_trait_impls {
                 let handler: api::PluginApiHandler = Arc::new(move |_m, args| {
                     let forward = Arc::clone(&forward_clone);
                     let m = method_clone.clone();
-                    Box::pin(async move {
-                        forward(m, args).await
-                    })
+                    Box::pin(async move { forward(m, args).await })
                 });
                 if let Ok(mut sh) = shared.lock() {
                     sh.insert(shared_key, handler);
@@ -899,7 +1006,9 @@ mod wit_trait_impls {
             // Track handler ownership for cleanup
             if let Some(ref owners) = self.ctx.handler_owners {
                 if let Ok(mut map) = owners.lock() {
-                    map.entry(self.plugin_name.clone()).or_default().push(method.clone());
+                    map.entry(self.plugin_name.clone())
+                        .or_default()
+                        .push(method.clone());
                 }
             }
 
@@ -908,7 +1017,10 @@ mod wit_trait_impls {
 
         fn unregister_handler(&mut self, method: String) -> Result<(), String> {
             self.require_capability("handler")?;
-            let mut registry = self.ctx.api_handlers.lock()
+            let mut registry = self
+                .ctx
+                .api_handlers
+                .lock()
                 .map_err(|e| format!("handler registry lock: {e}"))?;
             match registry.get(&method) {
                 Some(h) if h.plugin_name == self.plugin_name => {
@@ -937,10 +1049,16 @@ mod wit_trait_impls {
             }
         }
 
-        fn list_handlers(&mut self) -> Result<Vec<wit::phira::plugin::phira_handler::HandlerDescriptor>, String> {
-            let registry = self.ctx.api_handlers.lock()
+        fn list_handlers(
+            &mut self,
+        ) -> Result<Vec<wit::phira::plugin::phira_handler::HandlerDescriptor>, String> {
+            let registry = self
+                .ctx
+                .api_handlers
+                .lock()
                 .map_err(|e| format!("handler registry lock: {e}"))?;
-            let handlers: Vec<_> = registry.values()
+            let handlers: Vec<_> = registry
+                .values()
                 .filter(|h| h.plugin_name == self.plugin_name)
                 .map(|h| wit::phira::plugin::phira_handler::HandlerDescriptor {
                     method: h.method.clone(),
@@ -962,6 +1080,7 @@ mod wit_trait_impls {
     // ── phira-timer ──
     impl wit::phira::plugin::phira_timer::Host for WitPluginHost {
         fn set_timer(&mut self, delay_ms: u64, timer_id: String) -> Result<(), String> {
+            self.require_capability("timer")?;
             let plugin_name = self.plugin_name.clone();
             let ctx = Arc::clone(&self.ctx);
             let timer_name = timer_id.clone();
@@ -974,7 +1093,11 @@ mod wit_trait_impls {
                 }
             });
 
-            let mut registry = self.ctx.timers.lock().map_err(|e| format!("timer lock: {e}"))?;
+            let mut registry = self
+                .ctx
+                .timers
+                .lock()
+                .map_err(|e| format!("timer lock: {e}"))?;
             registry
                 .entry(plugin_name)
                 .or_default()
@@ -983,7 +1106,12 @@ mod wit_trait_impls {
         }
 
         fn clear_timer(&mut self, timer_id: String) -> Result<(), String> {
-            let mut registry = self.ctx.timers.lock().map_err(|e| format!("timer lock: {e}"))?;
+            self.require_capability("timer")?;
+            let mut registry = self
+                .ctx
+                .timers
+                .lock()
+                .map_err(|e| format!("timer lock: {e}"))?;
             if let Some(timers) = registry.get_mut(&self.plugin_name) {
                 if let Some(handle) = timers.remove(&timer_id) {
                     handle.abort();
@@ -1000,9 +1128,16 @@ mod wit_trait_impls {
             Ok(self.ctx.node_key.sign(&payload))
         }
 
-        fn verify(&mut self, pubkey: Vec<u8>, payload: Vec<u8>, signature: Vec<u8>) -> Result<bool, String> {
+        fn verify(
+            &mut self,
+            pubkey: Vec<u8>,
+            payload: Vec<u8>,
+            signature: Vec<u8>,
+        ) -> Result<bool, String> {
             self.require_capability("crypto")?;
-            Ok(crate::crypto::NodeKey::verify(&pubkey, &payload, &signature))
+            Ok(crate::crypto::NodeKey::verify(
+                &pubkey, &payload, &signature,
+            ))
         }
 
         fn sha256(&mut self, data: Vec<u8>) -> Result<Vec<u8>, String> {
@@ -1051,13 +1186,13 @@ mod capability_tests {
     }
 
     #[test]
-    fn default_capabilities_include_all() {
+    fn default_capabilities_are_least_privilege() {
         let caps = wasm_host_helpers::default_capabilities();
-        assert!(caps.contains("admin"), "default must include admin");
-        assert!(
-            caps.contains("room.manage"),
-            "default must include room.manage"
-        );
+        assert!(caps.contains("state.read"));
+        assert!(caps.contains("send"));
+        assert!(!caps.contains("admin"));
+        assert!(!caps.contains("room.manage"));
+        assert!(!caps.contains("http"));
         assert!(
             caps.contains("state.read"),
             "default must include state.read"

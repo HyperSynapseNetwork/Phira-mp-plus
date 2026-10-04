@@ -229,7 +229,7 @@ Phira-mp-plus/
 ├── README.md
 ├── server_config.yml                # YAML 配置文件
 ├── wit/                             # WIT 接口定义
-│   └── phira-plugin.wit             #   Plugin ABI v2 WIT (15 interfaces)
+│   └── phira-plugin.wit             #   Plugin ABI v3 WIT (16 interfaces)
 │
 ├── scripts/
 │   └── docgen.sh                    #   WIT → Markdown 文档生成脚本

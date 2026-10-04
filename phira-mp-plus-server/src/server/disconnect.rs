@@ -1,6 +1,6 @@
 //! User disconnection and kick methods.
 
-use phira_mp_common::{RoomEvent, ServerCommand};
+use phira_mp_common::ServerCommand;
 use serde_json::Value;
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -60,26 +60,22 @@ pub(crate) async fn run_admin_kick_user(
         .ok_or("user not found")?;
 
     if let Some(room) = user.room.read().await.as_ref().map(Arc::clone) {
-        let room_id = room.id.to_string();
-        let room_key = room.id.clone();
-        let was_monitor = user.monitor.load(std::sync::atomic::Ordering::SeqCst);
-        if room.on_user_leave(&user).await {
-            state.rooms.write().await.remove(&room_key);
-        }
-        if !was_monitor {
+        // All membership changes, including administrative kicks, go through
+        // the room actor. This keeps actor membership and connection
+        // references from diverging and lets the actor own LeaveRoom events.
+        state
+            .room_commands
+            .remove_user(state, &room.id.to_string(), target_id, None, None)
+            .await
+            .map_err(|error| format!("kick room removal failed: {error}"))?;
+        if !user.monitor.load(std::sync::atomic::Ordering::Relaxed) {
             state
-                .publish_room_event(RoomEvent::LeaveRoom {
-                    room: room_key,
-                    user: target_id,
+                .dispatch_plugin_event(crate::plugin::PluginEvent::RoomLeave {
+                    user_id: target_id,
+                    room_id: room.id.to_string(),
                 })
                 .await;
         }
-        state
-            .dispatch_plugin_event(crate::plugin::PluginEvent::RoomLeave {
-                user_id: target_id,
-                room_id,
-            })
-            .await;
     }
 
     let target_session = {
@@ -115,13 +111,8 @@ pub(crate) async fn run_admin_kick_user(
     if let Some(session) = target_session {
         let mut args = fluent::FluentArgs::new();
         args.set("reason", reason);
-        let content = crate::l10n::translate_system(
-            &session.user.lang, "kicked-by-admin", &args,
-        );
-        let message = ServerCommand::Message(phira_mp_common::Message::Chat {
-            user: 0,
-            content,
-        });
+        let content = crate::l10n::translate_system(&session.user.lang, "kicked-by-admin", &args);
+        let message = ServerCommand::Message(phira_mp_common::Message::Chat { user: 0, content });
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(2),
             session.stream.send_and_flush(message),

@@ -30,6 +30,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Pull requests check the synthetic merge ref in detached HEAD.
+          # Version/lockfile auto-patching is a main-branch operation; on PRs
+          # simply pass the checked-out merge SHA to downstream jobs instead of
+          # attempting to rebase and push from a detached checkout.
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "build_ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           FULL_VERSION=$(grep '^version = ' phira-mp-plus-server/Cargo.toml | sed 's/.*"\(.*\)"/\1/')
           MAJOR=$(echo "$FULL_VERSION" | cut -d. -f1)
           MINOR=$(echo "$FULL_VERSION" | cut -d. -f2)
@@ -144,4 +152,3 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact-path }}
           if-no-files-found: error
-
