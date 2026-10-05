@@ -58,6 +58,12 @@ pub struct RoomSnapshot {
     /// 保证旧的持久化快照可解析。
     #[serde(default)]
     pub degraded: bool,
+    /// Room-scoped Phira API endpoint override.
+    #[serde(default)]
+    pub phira_api_endpoint: Option<String>,
+    /// Whether an administrative start is waiting for the ready phase.
+    #[serde(default)]
+    pub admin_start_pending: bool,
 }
 
 impl RoomSnapshot {
@@ -106,6 +112,8 @@ impl RoomSnapshot {
             },
             members: state.state.members.clone(),
             degraded: state.state.degraded,
+            phira_api_endpoint: state.state.control.phira_api_endpoint.clone(),
+            admin_start_pending: state.state.control.admin_start_pending,
         }
     }
 }

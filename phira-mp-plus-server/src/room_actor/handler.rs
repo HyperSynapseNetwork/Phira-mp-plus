@@ -1113,12 +1113,20 @@ impl RoomCommandHandler {
                 // PMP46 Blocker 2: 权威状态变更前递增序号（audit §7.5）。
                 let _seq = bump_room_seq(lc, &mut as_.state).await;
                 as_.state.set_hidden(*hidden);
-                lc.dispatch_plugin_event(PluginEvent::RoomModify {
-                    user_id: 0,
-                    room_id: room_id.clone().to_string(),
-                    data: json!({"action":"hidden","value":hidden}).to_string(),
-                })
-                .await;
+                let srv = lc.server_state_arc();
+                let plugin_room_id = room_id.clone().to_string();
+                let plugin_hidden = *hidden;
+                crate::supervisor_actor::spawn_named(
+                    format!("room-modify-hidden-{plugin_room_id}"),
+                    async move {
+                        srv.dispatch_plugin_event(PluginEvent::RoomModify {
+                            user_id: 0,
+                            room_id: plugin_room_id,
+                            data: json!({"action":"hidden","value":plugin_hidden}).to_string(),
+                        })
+                        .await;
+                    },
+                );
                 ok(RoomCommandPayload::HiddenChanged {
                     room_id: room_id.clone().to_string(),
                     hidden: *hidden,
@@ -1572,9 +1580,15 @@ impl RoomCommandHandler {
             }
 
             RoomActorCommand::SetChartDuration {
-                room_id, duration, ..
+                room_id, duration, expected_chart_id, ..
             } => {
                 let as_ = ctx.expect_actor_state();
+                if let Some(expected) = expected_chart_id {
+                    if as_.state.chart != Some(*expected) {
+                        debug!(room = %room_id, expected_chart = expected, current_chart = ?as_.state.chart, "ignoring stale chart duration probe");
+                        return ok(RoomCommandPayload::ChartDurationSet);
+                    }
+                }
                 debug!(room = %room_id, duration = ?duration, "chart duration set");
                 as_.state.chart_duration = *duration;
                 ok(RoomCommandPayload::ChartDurationSet)

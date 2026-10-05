@@ -215,7 +215,7 @@ impl BenchmarkHarness {
         let _ = self
             .state
             .room_commands
-            .set_chart_duration(&self.state, &room_id, Some(9_000_000.0))
+            .set_chart_duration(&self.state, &room_id, Some(9_000_000.0), None)
             .await;
 
         if let Err(e) = self

@@ -21,6 +21,7 @@ impl RoomCommandGateway {
         state: &crate::server::PlusServerState,
         room_id: &str,
         duration: Option<f64>,
+        expected_chart_id: Option<i32>,
     ) -> Result<Value, String> {
         let started = Instant::now();
         let rid = room_id.to_string();
@@ -28,6 +29,7 @@ impl RoomCommandGateway {
             .room_mailbox(&rid, None, |reply| RoomActorCommand::SetChartDuration {
                 room_id: rid.clone(),
                 duration,
+                expected_chart_id,
                 reply,
             })
             .await;

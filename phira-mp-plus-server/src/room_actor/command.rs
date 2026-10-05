@@ -192,6 +192,9 @@ pub(crate) enum RoomActorCommand {
     SetChartDuration {
         room_id: String,
         duration: Option<f64>,
+        /// When present, apply only if this chart is still selected. This
+        /// prevents detached duration probes from overwriting a newer chart.
+        expected_chart_id: Option<i32>,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     /// 加入游玩中房间后注册进度通知订阅：actor 复核 Playing 后注册并立即

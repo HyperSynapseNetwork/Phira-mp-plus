@@ -11,7 +11,7 @@
 use crate::phira_client::PhiraRetryNoticeTarget;
 use crate::plugin::PluginEvent;
 use crate::session::{CommandOrigin, SessionCategory, User};
-use crate::session_auth::resolve_phira_api_endpoint;
+use crate::session_auth::resolve_phira_api_endpoint_for_room;
 use crate::tl;
 use anyhow::{anyhow, bail, Result};
 
@@ -1077,14 +1077,15 @@ pub async fn select_chart(
     async move {
         trace!("fetch");
         // Use live_config endpoint first, falling back to config file.
-        let endpoint = resolve_phira_api_endpoint(&user.server).await;
+        let endpoint = resolve_phira_api_endpoint_for_room(&user.server, Some(&room)).await;
         // P0-H: the external Phira API fetch is bounded by the command's
         // remaining absolute deadline — a slow/blocked API must never let a
         // SelectChart commit after the client already timed out.
         let fetch_budget = deadline.saturating_duration_since(Instant::now());
-        let (chart_name, chart_meta): (
+        let (chart_name, chart_meta, file_url): (
             String,
             Option<(String, String, String, Option<f32>, Option<String>)>,
+            Option<String>,
         ) = match tokio::time::timeout(
             fetch_budget,
             user.server.phira_client.get_json::<crate::server::Chart>(
@@ -1107,10 +1108,11 @@ pub async fn select_chart(
                     chart.rating,
                     chart.chart_updated,
                 )),
+                chart.file,
             ),
             Ok(Err(_)) => {
                 tracing::warn!("failed to fetch chart {id} from Phira API; using ID as name");
-                (format!("#{id}"), None)
+                (format!("#{id}"), None, None)
             }
             Err(_) => {
                 // Deadline exhausted before the API returned — the client has
@@ -1119,37 +1121,6 @@ pub async fn select_chart(
             }
         };
         debug!("chart name: {chart_name}");
-
-        // 异步解析谱面时长（RANGE 只下 zip 内正曲音频）；经 mailbox 写入
-        // 房间级 chart_duration，供对局超时计算。每次选谱解析，结算时释放。
-        {
-            let file_url = user
-                .server
-                .phira_client
-                .fetch_chart_by_id(&endpoint, id)
-                .await
-                .and_then(|c| c.file);
-            if let Some(url) = file_url {
-                let state = Arc::clone(&user.server);
-                let cid = id;
-                let rid = room.id.to_string();
-                tokio::spawn(async move {
-                    match state.phira_client.fetch_chart_duration(&url).await {
-                        Some(duration) => {
-                            let _ = state
-                                .room_commands
-                                .set_chart_duration(&state, &rid, Some(duration))
-                                .await;
-                            debug!(chart = cid, duration, "chart duration set");
-                        }
-                        None => warn!(
-                            chart = cid,
-                            "chart duration probe failed, using long fallback"
-                        ),
-                    }
-                });
-            }
-        }
 
         // P0-C: refuse a late commit — the client has already timed out.
         if crate::official_client_compat::timing::deadline_expired(deadline) {
@@ -1169,6 +1140,28 @@ pub async fn select_chart(
             )
             .await
             .map_err(|e| anyhow!("{}", tr(e)))?;
+
+        // Duration probing is deliberately detached from the SessionActor
+        // commit path. It uses the same chart id as the committed selection so
+        // a late probe can never overwrite a newer chart selection.
+        if let Some(url) = file_url {
+            let state = Arc::clone(&user.server);
+            let cid = id;
+            let rid = room.id.to_string();
+            tokio::spawn(async move {
+                match state.phira_client.fetch_chart_duration(&url).await {
+                    Some(duration) => {
+                        let _ = state
+                            .room_commands
+                            .set_chart_duration(&state, &rid, Some(duration), Some(cid))
+                            .await;
+                        debug!(chart = cid, duration, "chart duration set");
+                    }
+                    None => warn!(chart = cid, "chart duration probe failed, using long fallback"),
+                }
+            });
+        }
+
         // 广播谱面信息（谱师/曲师/难度/评分）——按用户语言本地化
         if let Some((charter, composer, level, rating, chart_updated)) = chart_meta {
             if !charter.is_empty() || !composer.is_empty() {
@@ -1300,7 +1293,7 @@ pub async fn played(
 ) -> Result<()> {
     let room = current_room(&user).await?;
     // Use live_config endpoint first, falling back to config file.
-    let endpoint = resolve_phira_api_endpoint(&user.server).await;
+    let endpoint = resolve_phira_api_endpoint_for_room(&user.server, Some(&room)).await;
     // P0-H: the remote record fetch is bounded by the command's remaining
     // absolute deadline — a slow/blocked Phira API must never let Played commit
     // after the client already timed out.
@@ -1375,15 +1368,20 @@ pub async fn abort(user: Arc<User>, deadline: Instant, origin: &CommandOrigin) -
 }
 
 pub async fn query_room_info(user: Arc<User>) -> Result<ServerCommand> {
-    let rooms_guard = user.server.rooms.read().await;
+    let rooms: Vec<(phira_mp_common::RoomId, Arc<crate::room::Room>)> = {
+        let rooms_guard = user.server.rooms.read().await;
+        rooms_guard
+            .iter()
+            .map(|(id, room)| (id.clone(), Arc::clone(room)))
+            .collect()
+    };
     let mut info: HashMap<phira_mp_common::RoomId, phira_mp_common::RoomData> = HashMap::new();
     let mut user_room_map: HashMap<i32, phira_mp_common::RoomId> = HashMap::new();
-    for (id, room) in rooms_guard.iter() {
+    for (id, room) in rooms {
         for u in room.users().await {
             user_room_map.insert(u.id, id.clone());
         }
-        info.insert(id.clone(), build_room_data(room).await);
+        info.insert(id.clone(), build_room_data(&room).await);
     }
-    drop(rooms_guard);
     Ok(ServerCommand::RoomResponse(Ok((info, user_room_map))))
 }

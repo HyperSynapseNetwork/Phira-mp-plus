@@ -5,6 +5,7 @@
 
 use crate::l10n::Language;
 use crate::phira_client::PhiraRetryNoticeTarget;
+use crate::room::Room;
 use crate::server::PlusServerState;
 use anyhow::{bail, Result};
 use phira_mp_common::{ServerCommand, StreamSender};
@@ -15,6 +16,26 @@ use tracing::warn;
 /// Resolve the effective Phira API endpoint from live_config (if non-empty),
 /// falling back to the static config value.
 pub(crate) async fn resolve_phira_api_endpoint(server: &PlusServerState) -> String {
+    resolve_phira_api_endpoint_for_room(server, None).await
+}
+
+/// Resolve the effective Phira API endpoint. A room override is authoritative
+/// for room-scoped API operations, followed by live config and then static
+/// config. The room snapshot is synchronous, so this does not hold the live
+/// config lock while consulting room state.
+pub(crate) async fn resolve_phira_api_endpoint_for_room(
+    server: &PlusServerState,
+    room: Option<&Room>,
+) -> String {
+    if let Some(room) = room {
+        if let Some(endpoint) = room.control_snapshot().phira_api_endpoint {
+            if !endpoint.is_empty() {
+                tracing::trace!(%endpoint, room = %room.id, "using room Phira API endpoint override");
+                return endpoint;
+            }
+        }
+    }
+
     let lc = server.live_config.read().await;
     let ep = if lc.phira_api_endpoint.is_empty() || lc.phira_api_endpoint == server.config.phira_api_endpoint {
         server.config.phira_api_endpoint.clone()
