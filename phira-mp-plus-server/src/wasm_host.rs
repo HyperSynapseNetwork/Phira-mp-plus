@@ -265,6 +265,7 @@ impl WitPluginComponent {
         plugin_name: String,
         services: Arc<WasmPluginServices>,
         runtime: WasmRuntimeConfig,
+        instance_id: String,
     ) -> Result<Self, String> {
         use crate::plugin_abi::wit_abi;
         let mut engine_config = wasmtime::Config::new();
@@ -284,7 +285,6 @@ impl WitPluginComponent {
             wasmtime::component::HasSelf<crate::wit_host::WitPluginHost>,
         >(&mut linker, |state: &mut WitHostState| &mut state.host)
         .map_err(|e| format!("linker setup: {e}"))?;
-        let instance_id = plugin_name.clone();
         let ctx = Self::build_context_from_services(&services, &plugin_name, &instance_id)?;
         Self::new_with_context(
             engine,

@@ -832,7 +832,7 @@ impl PluginManager {
                 ));
             }
 
-            let slot = PluginSlotInner::new(plugin, instance_id);
+            let slot = PluginSlotInner::new(plugin, instance_id.clone());
             if meta.max_concurrent_calls > 1 {
                 // Unusual: non-default concurrency. Log it for observability.
                 tracing::info!(
@@ -989,7 +989,7 @@ impl PluginManager {
             let execution_deadline = std::time::Instant::now() + execution_timeout;
             let _execution = call_slot
                 .wait_for_execution_until(execution_deadline)
-                .map_err(str::to_string)?;
+                 .map_err(|err| format!("{err:?}"))?;
             // NOTE: The Mutex still serializes API calls even when
             // max_concurrent_calls > 1. True parallelism requires
             // PluginHost::call_api(&self) instead of &mut self, or

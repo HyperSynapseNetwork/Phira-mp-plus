@@ -2051,7 +2051,7 @@ impl RoomCommandHandler {
                             "monitor": monitor,
                         }),
                     });
-                    return Err("missing live connection".to_string());
+                    return err("missing live connection");
                 }
                 let already_present = as_.state.members.users.contains(user_id)
                     || as_.state.members.monitors.contains(user_id);
