@@ -119,6 +119,39 @@ impl PlusServer {
                 }
             };
 
+            // Game-port health checks and generic HTTP clients occasionally hit
+            // the binary protocol port.  Peek only a small bounded prefix in the
+            // per-connection task, with a short timeout, so the accept loop can
+            // continue admitting real Phira clients without waiting on a slow
+            // peer.  The bytes are not consumed, preserving the binary protocol.
+            const PROTOCOL_PEEK_TIMEOUT: std::time::Duration =
+                std::time::Duration::from_millis(100);
+            const PROTOCOL_PEEK_MAX: usize = 32;
+            let mut prefix = [0u8; PROTOCOL_PEEK_MAX];
+            match tokio::time::timeout(PROTOCOL_PEEK_TIMEOUT, stream.peek(&mut prefix)).await {
+                Ok(Ok(n)) => {
+                    let p = &prefix[..n];
+                    const METHODS: [&[u8]; 8] = [
+                        b"GET ", b"POST ", b"HEAD ", b"PUT ",
+                        b"DELETE ", b"OPTIONS ", b"PATCH ", b"CONNECT ",
+                    ];
+                    let http1 = METHODS.iter().any(|method| p.starts_with(method));
+                    let http2 = p.starts_with(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+                    if http1 || http2 {
+                        warn!(%ip, "HTTP request received on the Phira game port; closing connection");
+                        return;
+                    }
+                }
+                Ok(Err(e)) => {
+                    trace!(%ip, error = %e, "game-port protocol peek failed; continuing to auth path");
+                }
+                Err(_) => {
+                    // No bytes arrived quickly enough.  Do not classify the
+                    // connection as HTTP; normal authentication owns the full
+                    // timeout budget from here.
+                }
+            }
+
             // ── IP ban check moved to the auth path ───────────────────────
             // The accept layer no longer silently drops IP-banned connections:
             // closing the TCP stream without a response makes the official

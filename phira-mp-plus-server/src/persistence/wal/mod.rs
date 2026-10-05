@@ -38,6 +38,10 @@ pub(crate) const DEGRADED_ACK: u8 = 1 << 0;
 pub(crate) const DEGRADED_CORRUPTION: u8 = 1 << 1;
 pub(crate) const DEGRADED_MARKER: u8 = 1 << 2;
 pub(crate) const DEGRADED_COMPACT: u8 = 1 << 3;
+/// The WAL contains a frame format newer than this binary understands.  This
+/// is distinct from corruption: the bytes may be perfectly valid, but replay
+/// cannot safely interpret them without the matching software version.
+pub(crate) const DEGRADED_FORMAT: u8 = 1 << 4;
 
 /// Minimum free disk space (bytes) below which admissions are rejected.
 /// Only checked on Unix (statvfs); unused on Windows.
@@ -232,12 +236,12 @@ impl PersistenceWal {
         self.degraded.fetch_and(!DEGRADED_COMPACT, Ordering::AcqRel);
     }
 
-    /// Whether the WAL is in a FATAL state — corruption or compact failure —
+    /// Whether the WAL is in a FATAL state — corruption, format mismatch, or compact failure —
     /// in which NO writes are permitted, including ACK appends (P0-A).  The
     /// recoverable ACK and MARKER reasons do NOT make the WAL fatal.
     pub fn is_fatal(&self) -> bool {
         let mask = self.degraded.load(Ordering::Acquire);
-        mask & (DEGRADED_CORRUPTION | DEGRADED_COMPACT) != 0
+        mask & (DEGRADED_CORRUPTION | DEGRADED_FORMAT | DEGRADED_COMPACT) != 0
     }
 
     /// Whether the WAL is currently degraded (any reason set).
@@ -260,6 +264,9 @@ impl PersistenceWal {
         }
         if mask & DEGRADED_COMPACT != 0 {
             out.push("compact");
+        }
+        if mask & DEGRADED_FORMAT != 0 {
+            out.push("format");
         }
         out
     }
@@ -669,7 +676,7 @@ impl PersistenceWal {
         // guaranteed).  ACK and MARKER degradation do NOT block admission —
         // ACK is retried, MARKER yields AdmittedDegraded.
         let mask = self.degraded.load(Ordering::Acquire);
-        if mask & (DEGRADED_CORRUPTION | DEGRADED_COMPACT) != 0 {
+        if mask & (DEGRADED_CORRUPTION | DEGRADED_FORMAT | DEGRADED_COMPACT) != 0 {
             return Err(format!(
                 "WAL is degraded ({:?}) — admissions rejected",
                 self.degraded_reasons()
@@ -771,9 +778,11 @@ impl PersistenceWal {
     ///
     /// # Fail-closed semantics
     ///
-    /// If the WAL contains a frame with a valid structure but invalid checksum,
-    /// replay fails immediately. The caller must NOT proceed with an empty replay
-    /// — data integrity cannot be guaranteed.
+    /// A checksum failure in a non-final frame, or in the final frame without
+    /// an intact prefix proving it is isolated, fails closed. A final checksum
+    /// failure with an intact prefix is recovered as explicit tail corruption:
+    /// the original bytes are backed up, the tail is truncated, and CORRUPTION
+    /// remains latched so new admissions stay disabled.
     ///
     /// # Tail leniency (hard-kill torn writes)
     ///
@@ -850,9 +859,9 @@ impl PersistenceWal {
             }
         }
 
-        // A hard kill can leave an incomplete final JSON line. Only syntactic
-        // truncation is auto-cleaned; a complete frame with a bad checksum is
-        // treated as corruption even when it is the final line.
+    // A hard kill can leave an incomplete final JSON line. A complete final
+    // frame without a newline is normalized only when it verifies; otherwise
+    // there is no intact-prefix proof in this branch, so fail closed.
         if bytes.last().map(|&b| b != b'\n').unwrap_or(false) {
             // If the last byte was not a newline, the final segment may be an
             // incomplete write OR a complete frame whose trailing newline was
@@ -863,7 +872,7 @@ impl PersistenceWal {
                     match serde_json::from_slice::<WalFrame>(last) {
                         Ok(frame) => {
                             if frame.ver > WAL_FORMAT_VERSION {
-                                self.mark_degraded(DEGRADED_CORRUPTION);
+                                self.mark_degraded(DEGRADED_FORMAT);
                                 return Err(format!(
                                     "WAL {} final frame uses unsupported format version {}",
                                     self.path.display(),
@@ -884,7 +893,20 @@ impl PersistenceWal {
                             self.append_missing_newline().await?;
                         }
                         Err(_) => {
-                            // Syntactically incomplete tail — discard.
+                            // Without an intact prefix we cannot prove that
+                            // this is merely a torn tail rather than a wholly
+                            // corrupted WAL. Fail closed instead of silently
+                            // discarding potentially admitted data.
+                            let has_intact_prefix = lines.iter().any(|line| !line.is_empty());
+                            if !has_intact_prefix {
+                                self.mark_degraded(DEGRADED_CORRUPTION);
+                                return Err(format!(
+                                    "WAL {} has a truncated final frame but no intact prefix; refusing silent data loss",
+                                    self.path.display()
+                                ));
+                            }
+                            // Syntactically incomplete tail with an intact
+                            // prefix — safe to recover as a proven tail.
                             has_truncated = true;
                             truncated_at = bytes.len().saturating_sub(last.len());
                         }
@@ -915,7 +937,7 @@ impl PersistenceWal {
                     }
                     Ok(frame) => {
                         if frame.ver > WAL_FORMAT_VERSION {
-                            self.mark_degraded(DEGRADED_CORRUPTION);
+                            self.mark_degraded(DEGRADED_FORMAT);
                             return Err(format!(
                                 "WAL {} final frame uses unsupported format version {}",
                                 self.path.display(),
@@ -923,11 +945,20 @@ impl PersistenceWal {
                             ));
                         }
                         if let Err(error) = frame.verify() {
-                            self.mark_degraded(DEGRADED_CORRUPTION);
-                            return Err(format!(
-                                "corrupt WAL {} final frame: {error}",
+                            // With an intact non-empty prefix, a bad final
+                            // frame is provably isolated to the tail. Keep
+                            // the prefix, preserve the original bytes in a
+                            // forensic backup, then truncate and latch
+                            // CORRUPTION so no new admissions are accepted.
+                            has_truncated = true;
+                            torn_final_line = true;
+                            truncated_at = line_starts[last_real_idx];
+                            lines.truncate(last_real_idx);
+                            warn!(
+                                "WAL {} final frame checksum is corrupt; treating it as a proven tail corruption",
                                 self.path.display()
-                            ));
+                            );
+                            let _ = error;
                         }
                     }
                 }
@@ -946,8 +977,10 @@ impl PersistenceWal {
                 )
             })?;
 
-            // Version check: future versions are rejected.
+            // Version check: future versions are rejected and classified as a
+            // format mismatch, not as byte corruption.
             if frame.ver > WAL_FORMAT_VERSION {
+                self.mark_degraded(DEGRADED_FORMAT);
                 return Err(format!(
                     "WAL {} line {}: unsupported format version {}, expected <= {}",
                     self.path.display(),
@@ -966,7 +999,7 @@ impl PersistenceWal {
                 )
             })?;
 
-            // Track records for potential v1→v2 WAL upgrade.
+            // Track records for potential v1→current-format WAL upgrade.
             if frame.ver == 1 {
                 needs_upgrade = true;
             }
@@ -1036,17 +1069,30 @@ impl PersistenceWal {
             // single truncated line — we still truncate to 0 bytes.
             if truncated_at < bytes.len() {
                 let removed = bytes.len().saturating_sub(truncated_at);
+                let backup_path = match backup_corrupt_wal(&self.path, &bytes).await {
+                    Ok(path) => path,
+                    Err(e) => {
+                        self.mark_degraded(DEGRADED_CORRUPTION);
+                        return Err(format!(
+                            "WAL {} corrupted tail detected but forensic backup failed; refusing to truncate: {e}",
+                            self.path.display()
+                        ));
+                    }
+                };
                 match truncate_wal_file(&self.path, truncated_at).await {
                     Ok(new_len) => {
+                        self.mark_degraded(DEGRADED_CORRUPTION);
                         bytes.truncate(truncated_at);
                         self.total_bytes.store(new_len, Ordering::Release);
                         warn!(
-                            "WAL {} truncated to {} bytes (removed {removed} corrupted bytes)",
+                            "WAL {} truncated to {} bytes (removed {removed} corrupted bytes; backup={})",
                             self.path.display(),
                             truncated_at,
+                            backup_path.display(),
                         );
                     }
                     Err(e) => {
+                        self.mark_degraded(DEGRADED_CORRUPTION);
                         // Truncation is required for data safety — fail-closed.
                         return Err(format!(
                             "WAL {} truncation failed after detecting corrupted tail: {e}",
@@ -1071,7 +1117,7 @@ impl PersistenceWal {
             .filter(|(id, _, _)| !acked.contains(id))
             .collect();
 
-        // Upgrade WAL from v1 to v2 if any v1 frames were encountered.
+        // Upgrade WAL from v1 to the current format if any v1 frames were encountered.
         // This must happen before admit_sequence is restored so that the
         // rewritten records carry their newly assigned sequences.
         if needs_upgrade {
@@ -1102,7 +1148,7 @@ impl PersistenceWal {
         Ok(unacked)
     }
 
-    /// Upgrade a v1-format WAL to v2, assigning sequential sequence numbers
+    /// Upgrade a v1-format WAL to the current format, assigning sequential sequence numbers
     /// to v1 admission records that lack the `sequence` field.
     ///
     /// Called during `replay()` when v1 frames are detected.  This is an
@@ -1516,7 +1562,7 @@ impl PersistenceWal {
                             segments.truncate(last_real_idx);
                         }
                         Ok(frame) if frame.ver > WAL_FORMAT_VERSION => {
-                            self.mark_degraded(DEGRADED_CORRUPTION);
+                            self.mark_degraded(DEGRADED_FORMAT);
                             return Err(format!(
                                 "WAL {} during list_pending: unsupported final format version {}",
                                 self.path.display(),
@@ -1546,7 +1592,7 @@ impl PersistenceWal {
                         segments.pop();
                     }
                     Ok(frame) if frame.ver > WAL_FORMAT_VERSION => {
-                        self.mark_degraded(DEGRADED_CORRUPTION);
+                        self.mark_degraded(DEGRADED_FORMAT);
                         return Err(format!(
                             "WAL {} during list_pending: unsupported final format version {}",
                             self.path.display(),
@@ -1636,6 +1682,44 @@ impl PersistenceWal {
         }
         false
     }
+}
+
+/// Preserve the exact pre-recovery WAL before destructive tail truncation.
+/// The backup name is deliberately outside the normal WAL suffix so operators
+/// can inspect it without the persistence worker treating it as a live WAL.
+async fn backup_corrupt_wal(path: &std::path::Path, bytes: &[u8]) -> Result<std::path::PathBuf, String> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| format!("clock before UNIX epoch: {e}"))?
+        .as_nanos();
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "WAL path has no UTF-8 file name".to_string())?;
+    let backup = path.with_file_name(format!("{file_name}.corrupt-{timestamp}"));
+    let mut file = tokio::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&backup)
+        .await
+        .map_err(|e| format!("create corrupt WAL backup {}: {e}", backup.display()))?;
+    use tokio::io::AsyncWriteExt;
+    file.write_all(bytes)
+        .await
+        .map_err(|e| format!("write corrupt WAL backup {}: {e}", backup.display()))?;
+    file.sync_all()
+        .await
+        .map_err(|e| format!("sync corrupt WAL backup {}: {e}", backup.display()))?;
+    drop(file);
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = tokio::fs::File::open(parent).await {
+            dir.sync_all()
+                .await
+                .map_err(|e| format!("sync parent after corrupt WAL backup: {e}"))?;
+        }
+    }
+    Ok(backup)
 }
 
 /// Truncate a WAL file at the given byte offset.
@@ -2076,13 +2160,32 @@ mod tests {
 
         let replay = wal.replay().await;
         assert!(
-            replay.is_err(),
-            "checksum corruption must fail closed: {replay:?}"
+            replay.is_ok(),
+            "a checksum-corrupt final frame with an intact prefix is recoverable tail corruption: {replay:?}"
         );
         assert!(
             wal.is_degraded(),
-            "checksum corruption must latch degradation"
+            "recovered tail corruption must latch CORRUPTION degradation"
         );
+        let recovered = tokio::fs::read(&path).await.unwrap();
+        assert_eq!(
+            recovered, intact_prefix,
+            "recovery must retain the proven intact prefix and truncate only the corrupt tail"
+        );
+        let parent = path.parent().unwrap();
+        let prefix = format!("{}.corrupt-", path.file_name().unwrap().to_string_lossy());
+        let mut backup_found = false;
+        let mut entries = tokio::fs::read_dir(parent).await.unwrap();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                backup_found = true;
+                let backup = tokio::fs::read(entry.path()).await.unwrap();
+                assert_eq!(backup, content, "forensic backup must preserve the original corrupt WAL");
+                let _ = tokio::fs::remove_file(entry.path()).await;
+                break;
+            }
+        }
+        assert!(backup_found, "tail recovery must create a .corrupt-<timestamp> backup");
 
         let _ = tokio::fs::remove_file(path.with_extension("wal.instance")).await;
         let _ = tokio::fs::remove_file(path).await;

@@ -144,6 +144,10 @@ pub trait PluginHost: Send {
 struct PluginSlotInner {
     host: Mutex<Box<dyn PluginHost>>,
     meta_cache: StdRwLock<PluginMeta>,
+    /// Stable in-process identity for this loaded instance.  The stable id is
+    /// the plugin file stem and the generation is incremented on every load,
+    /// so cleanup from an older generation can never target a replacement.
+    instance_id: String,
     /// Current number of in-flight executions.
     inflight: AtomicUsize,
     /// Maximum concurrent executions (Atomically updatable).
@@ -152,6 +156,25 @@ struct PluginSlotInner {
 }
 
 type PluginSlot = Arc<PluginSlotInner>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PluginExecutionWaitError {
+    Quarantined,
+    Capacity,
+    Race,
+    Deadline,
+}
+
+impl std::fmt::Display for PluginExecutionWaitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Quarantined => "plugin is quarantined after a timed-out call",
+            Self::Capacity => "plugin has reached maximum concurrent calls",
+            Self::Race => "plugin concurrency race",
+            Self::Deadline => "plugin execution slot wait timed out",
+        })
+    }
+}
 
 struct PluginExecutionPermit<'a> {
     slot: &'a PluginSlotInner,
@@ -164,11 +187,12 @@ impl Drop for PluginExecutionPermit<'_> {
 }
 
 impl PluginSlotInner {
-    fn new(host: Box<dyn PluginHost>) -> PluginSlot {
+    fn new(host: Box<dyn PluginHost>, instance_id: String) -> PluginSlot {
         let meta = host.meta().clone();
         Arc::new(Self {
             host: Mutex::new(host),
             meta_cache: StdRwLock::new(meta),
+            instance_id,
             inflight: AtomicUsize::new(0),
             max_concurrent: AtomicUsize::new(1),
             quarantined: AtomicBool::new(false),
@@ -185,35 +209,45 @@ impl PluginSlotInner {
         self.host.lock()
     }
 
-    fn try_execution(&self) -> Result<PluginExecutionPermit<'_>, &'static str> {
+    fn try_execution(&self) -> Result<PluginExecutionPermit<'_>, PluginExecutionWaitError> {
         if self.quarantined.load(Ordering::Acquire) {
-            return Err("plugin is quarantined after a timed-out call");
+            return Err(PluginExecutionWaitError::Quarantined);
         }
         let max = self.max_concurrent.load(Ordering::Acquire);
         let current = self.inflight.load(Ordering::Acquire);
         if current >= max {
-            return Err("plugin has reached maximum concurrent calls");
+            return Err(PluginExecutionWaitError::Capacity);
         }
         self.inflight
             .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| "plugin concurrency race")?;
+            .map_err(|_| PluginExecutionWaitError::Race)?;
         Ok(PluginExecutionPermit { slot: self })
     }
 
     fn wait_for_execution_until(
         &self,
         deadline: std::time::Instant,
-    ) -> Result<PluginExecutionPermit<'_>, &'static str> {
+    ) -> Result<PluginExecutionPermit<'_>, PluginExecutionWaitError> {
         loop {
             match self.try_execution() {
                 Ok(permit) => return Ok(permit),
-                Err("plugin has reached maximum concurrent calls") => {
+                Err(PluginExecutionWaitError::Capacity) => {
                     if std::time::Instant::now() >= deadline {
-                        return Err("plugin execution slot wait timed out");
+                        return Err(PluginExecutionWaitError::Deadline);
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(2));
+                    // This function is called only from spawn_blocking.  Yield
+                    // before the short bounded sleep so contention does not
+                    // burn a worker CPU while preserving the serialized gate.
+                    std::thread::yield_now();
+                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    std::thread::sleep(std::time::Duration::from_millis(2).min(remaining));
                 }
-                Err("plugin concurrency race") => continue,
+                Err(PluginExecutionWaitError::Race) => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(PluginExecutionWaitError::Deadline);
+                    }
+                    std::thread::yield_now();
+                }
                 Err(reason) => return Err(reason),
             }
         }
@@ -250,6 +284,9 @@ impl PluginSlotInner {
     }
 
     fn matches(&self, id: &str) -> bool {
+        if self.instance_id == id {
+            return true;
+        }
         let meta = self.meta_cache.read().unwrap_or_else(|e| e.into_inner());
         plugin_matches(&meta, id)
     }
@@ -264,6 +301,7 @@ pub mod wasm {
         meta: PluginMeta,
         services: Arc<wasm_host::WasmPluginServices>,
         runtime: WasmRuntimeConfig,
+        instance_id: String,
         component_instance: Option<wasm_host::WitPluginComponent>,
     }
 
@@ -273,6 +311,7 @@ pub mod wasm {
             info: PluginInfo,
             services: Arc<wasm_host::WasmPluginServices>,
             runtime: WasmRuntimeConfig,
+            instance_id: String,
         ) -> Self {
             Self {
                 meta: PluginMeta {
@@ -284,6 +323,7 @@ pub mod wasm {
                 },
                 services,
                 runtime,
+                instance_id,
                 component_instance: None,
             }
         }
@@ -302,6 +342,7 @@ pub mod wasm {
                 plugin_name,
                 Arc::clone(&self.services),
                 self.runtime.clone(),
+                self.instance_id.clone(),
             )?;
             component.call_init()?;
             self.meta.info = component.info.clone();
@@ -397,6 +438,8 @@ pub struct PluginManager {
     /// Tracks which handlers are owned by each plugin (method name list per plugin).
     /// Used by remove_plugin to clean up the shared handler registry.
     handler_owners: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    /// Per-stable-id generation counter.  Never reused within this process.
+    generations: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl PluginManager {
@@ -408,6 +451,7 @@ impl PluginManager {
         let cli_commands = Arc::new(Mutex::new(HashMap::new()));
         let api_handlers = Arc::new(Mutex::new(HashMap::new()));
         let handler_owners = Arc::new(Mutex::new(HashMap::new()));
+        let generations = Arc::new(Mutex::new(HashMap::new()));
         let http_handle = Arc::new(RwLock::new(None));
         let (event_tx, event_rx) = mpsc::channel(runtime.event_queue_capacity.max(16));
 
@@ -438,6 +482,7 @@ impl PluginManager {
             wasm_services,
             plugin_tcp_tx: tokio::sync::Mutex::new(None),
             handler_owners,
+            generations,
         }
     }
 
@@ -716,12 +761,19 @@ impl PluginManager {
                 .and_then(|value| value.to_str())
                 .ok_or_else(|| "plugin filename is not UTF-8".to_string())?
                 .to_string();
+            let generation = {
+                let mut generations = self.generations.lock().unwrap_or_else(|e| e.into_inner());
+                let next = generations.entry(stable_id.clone()).or_insert(0);
+                *next = next.saturating_add(1);
+                *next
+            };
+            let instance_id = format!("{stable_id}@{generation}");
             let capabilities = crate::wasm_host_helpers::load_manifest_capabilities(
                 path.to_str()
                     .ok_or_else(|| "plugin path is not UTF-8".to_string())?,
             )?;
             self.wasm_services
-                .set_capabilities(&stable_id, capabilities.into_iter().collect());
+                .set_capabilities(&instance_id, capabilities.into_iter().collect());
             let info = PluginInfo {
                 name: stable_id.clone(),
                 version: "0.1.0".to_string(),
@@ -734,6 +786,7 @@ impl PluginManager {
                 info,
                 Arc::clone(&self.wasm_services),
                 self.runtime.clone(),
+                instance_id.clone(),
             ));
             let init_timeout =
                 std::time::Duration::from_millis(self.runtime.init_timeout_ms.max(1));
@@ -748,15 +801,15 @@ impl PluginManager {
             {
                 Ok(Ok(Ok(plugin))) => plugin,
                 Ok(Ok(Err(error))) => {
-                    self.wasm_services.remove_capabilities(&stable_id);
+                    self.wasm_services.remove_capabilities(&instance_id);
                     return Err(error);
                 }
                 Ok(Err(error)) => {
-                    self.wasm_services.remove_capabilities(&stable_id);
+                    self.wasm_services.remove_capabilities(&instance_id);
                     return Err(format!("plugin loader task failed: {error}"));
                 }
                 Err(_) => {
-                    self.wasm_services.remove_capabilities(&stable_id);
+                    self.wasm_services.remove_capabilities(&instance_id);
                     return Err(format!(
                         "plugin init exceeded {} ms",
                         self.runtime.init_timeout_ms
@@ -772,14 +825,14 @@ impl PluginManager {
                 .map(|item| item.info.name)
                 .collect();
             if existing.contains(&meta.info.name) {
-                self.wasm_services.remove_capabilities(&stable_id);
+                self.wasm_services.remove_capabilities(&instance_id);
                 return Err(format!(
                     "duplicate plugin display name '{}'",
                     meta.info.name
                 ));
             }
 
-            let slot = PluginSlotInner::new(plugin);
+            let slot = PluginSlotInner::new(plugin, instance_id);
             if meta.max_concurrent_calls > 1 {
                 // Unusual: non-default concurrency. Log it for observability.
                 tracing::info!(
@@ -791,7 +844,7 @@ impl PluginManager {
             {
                 slot.set_max_concurrent(meta.max_concurrent_calls);
             }
-            self.wasm_services.register_plugin_runtime(&stable_id);
+            self.wasm_services.register_plugin_runtime(&instance_id);
             self.plugins.write().await.push(slot);
             Ok(meta)
         }
@@ -997,7 +1050,7 @@ impl PluginManager {
     /// but its .wasm file, capability sidecar, and data directory are NOT deleted.
     /// Use `purge_plugin_data` to clean up files separately.
     pub async fn remove_plugin(&self, id: &str) -> Result<(), String> {
-        let (slot, plugin_name, stable_id) = {
+        let (slot, plugin_name, stable_id, instance_id) = {
             let slots = self.plugins.read().await;
             let slot = slots
                 .iter()
@@ -1011,7 +1064,7 @@ impl PluginManager {
                 .and_then(|value| value.to_str())
                 .ok_or_else(|| "plugin filename is not UTF-8".to_string())?
                 .to_string();
-            (slot.clone(), meta.info.name.clone(), stable_id)
+            (slot.clone(), meta.info.name.clone(), stable_id, slot.instance_id.clone())
         };
 
         {
@@ -1038,7 +1091,7 @@ impl PluginManager {
 
         #[cfg(feature = "plugin-system")]
         {
-            self.wasm_services.remove_capabilities(&stable_id);
+            self.wasm_services.remove_capabilities(&instance_id);
             let removed = self
                 .wasm_services
                 .extensions
@@ -1057,7 +1110,7 @@ impl PluginManager {
                 if let Some(ref tx) = *tx_guard {
                     let (reply, _rx) = std::sync::mpsc::channel();
                     if tx.try_send(crate::plugin_tcp::PluginTcpCommand::RemovePlugin {
-                        plugin_id: plugin_name.clone(),
+                        plugin_instance_id: instance_id.clone(),
                         reply,
                     }).is_err() {
                         warn!(plugin = %plugin_name, "TCP cleanup command could not be queued during plugin removal");
@@ -1070,7 +1123,7 @@ impl PluginManager {
         // Keys are prefixed with plugin_name to avoid cross-plugin collisions.
         {
             if let Ok(mut owners) = self.handler_owners.lock() {
-                if let Some(methods) = owners.remove(&plugin_name) {
+                if let Some(methods) = owners.remove(&instance_id) {
                     if let Ok(mut handlers) = self.api_handlers.lock() {
                         for method in methods {
                             handlers.remove(&format!("{}.{}", plugin_name, method));

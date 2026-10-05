@@ -2035,6 +2035,24 @@ impl RoomCommandHandler {
                 if origin_stale(lc, origin, *user_id).await {
                     return refuse_stale_origin();
                 }
+                // Production AddUser must always carry the live User/session
+                // reference.  A missing connection would otherwise create an
+                // actor member that cannot receive leave/cleanup traffic.
+                // Benchmarks/internal helpers use the real User object too;
+                // there is no production None escape hatch.
+                if connection.is_none() {
+                    warn!(room = %room_id, user = %user_id, monitor = *monitor,
+                        "rejected AddUser with missing connection (ghost-member prevention)");
+                    lc.server_state().event_bus.publish(crate::event_bus::MpEvent::Custom {
+                        kind: "room.add_user.missing_connection".to_string(),
+                        payload: serde_json::json!({
+                            "room_id": room_id,
+                            "user_id": user_id,
+                            "monitor": monitor,
+                        }),
+                    });
+                    return Err("missing live connection".to_string());
+                }
                 let already_present = as_.state.members.users.contains(user_id)
                     || as_.state.members.monitors.contains(user_id);
                 if already_present {

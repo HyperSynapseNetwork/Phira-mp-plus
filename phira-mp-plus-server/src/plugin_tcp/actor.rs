@@ -577,8 +577,8 @@ impl PluginTcpActor {
                     };
                     let _ = reply.send(result);
                 }
-                PluginTcpCommand::RemovePlugin { plugin_id, reply } => {
-                    self.remove_plugin_handles(&plugin_id);
+                PluginTcpCommand::RemovePlugin { plugin_instance_id, reply } => {
+                    self.remove_plugin_handles(&plugin_instance_id);
                     let _ = reply.send(Ok(()));
                 }
                 PluginTcpCommand::Stats { reply } => {

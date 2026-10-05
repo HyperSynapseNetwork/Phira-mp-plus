@@ -703,7 +703,7 @@ mod wit_trait_impls {
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
             let (reply, rx) = std::sync::mpsc::channel();
             tx.try_send(crate::plugin_tcp::PluginTcpCommand::Connect {
-                plugin_id: self.plugin_name.clone(),
+                plugin_id: self.instance_id.clone(),
                 addr,
                 reply,
             })
@@ -724,7 +724,7 @@ mod wit_trait_impls {
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
             let (reply, rx) = std::sync::mpsc::channel();
             tx.try_send(crate::plugin_tcp::PluginTcpCommand::Listen {
-                plugin_id: self.plugin_name.clone(),
+                plugin_id: self.instance_id.clone(),
                 addr,
                 reply,
             })
@@ -744,7 +744,7 @@ mod wit_trait_impls {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
             tx.try_send(crate::plugin_tcp::PluginTcpCommand::Send {
-                plugin_id: self.plugin_name.clone(),
+                plugin_id: self.instance_id.clone(),
                 handle,
                 bytes,
             })
@@ -755,7 +755,7 @@ mod wit_trait_impls {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
             tx.try_send(crate::plugin_tcp::PluginTcpCommand::Close {
-                plugin_id: self.plugin_name.clone(),
+                plugin_id: self.instance_id.clone(),
                 handle,
             })
             .map_err(|e| format!("tcp close failed: {e}"))
@@ -766,7 +766,7 @@ mod wit_trait_impls {
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
             let (reply, rx) = std::sync::mpsc::channel();
             tx.try_send(crate::plugin_tcp::PluginTcpCommand::Accept {
-                plugin_id: self.plugin_name.clone(),
+                plugin_id: self.instance_id.clone(),
                 listener_handle: handle,
                 reply,
             })
@@ -787,7 +787,7 @@ mod wit_trait_impls {
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
             let (reply, rx) = std::sync::mpsc::channel();
             tx.try_send(crate::plugin_tcp::PluginTcpCommand::Recv {
-                plugin_id: self.plugin_name.clone(),
+                plugin_id: self.instance_id.clone(),
                 handle,
                 max_bytes,
                 reply,
@@ -807,7 +807,7 @@ mod wit_trait_impls {
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
             let (reply, rx) = std::sync::mpsc::channel();
             tx.try_send(crate::plugin_tcp::PluginTcpCommand::PeerAddr {
-                plugin_id: self.plugin_name.clone(),
+                plugin_id: self.instance_id.clone(),
                 handle,
                 reply,
             })
@@ -1006,7 +1006,7 @@ mod wit_trait_impls {
             // Track handler ownership for cleanup
             if let Some(ref owners) = self.ctx.handler_owners {
                 if let Ok(mut map) = owners.lock() {
-                    map.entry(self.plugin_name.clone())
+                    map.entry(self.instance_id.clone())
                         .or_default()
                         .push(method.clone());
                 }
@@ -1034,10 +1034,10 @@ mod wit_trait_impls {
                     // Remove from handler_owners tracking
                     if let Some(ref owners) = self.ctx.handler_owners {
                         if let Ok(mut map) = owners.lock() {
-                            if let Some(methods) = map.get_mut(&self.plugin_name) {
+                            if let Some(methods) = map.get_mut(&self.instance_id) {
                                 methods.retain(|m| m != &method);
                                 if methods.is_empty() {
-                                    map.remove(&self.plugin_name);
+                                    map.remove(&self.instance_id);
                                 }
                             }
                         }

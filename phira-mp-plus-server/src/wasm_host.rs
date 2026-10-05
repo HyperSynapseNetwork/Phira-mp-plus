@@ -135,6 +135,12 @@ pub struct WitHostState {
 /// Wraps a compiled component and its store, providing lifecycle API.
 #[cfg(feature = "wit-bindgen")]
 pub struct WitPluginComponent {
+    engine: wasmtime::Engine,
+    component_definition: wasmtime::component::Component,
+    linker: wasmtime::component::Linker<WitHostState>,
+    context: Arc<crate::wit_host::WitHostContext>,
+    max_memory_bytes: usize,
+    instance_id: String,
     store: wasmtime::Store<WitHostState>,
     component: crate::plugin_abi::wit_abi::PhiraPluginV3,
     pub info: PluginInfo,
@@ -149,6 +155,7 @@ impl WitPluginComponent {
     fn build_context_from_services(
         services: &Arc<WasmPluginServices>,
         plugin_name: &str,
+        instance_id: &str,
     ) -> Result<Arc<crate::wit_host::WitHostContext>, String> {
         let state_ref = services
             .server_state
@@ -166,7 +173,7 @@ impl WitPluginComponent {
             .capabilities
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(plugin_name)
+            .get(instance_id)
             .cloned()
             .unwrap_or_else(|| {
                 crate::wasm_host_helpers::default_capabilities()
@@ -277,8 +284,17 @@ impl WitPluginComponent {
             wasmtime::component::HasSelf<crate::wit_host::WitPluginHost>,
         >(&mut linker, |state: &mut WitHostState| &mut state.host)
         .map_err(|e| format!("linker setup: {e}"))?;
-        let ctx = Self::build_context_from_services(&services, &plugin_name)?;
-        Self::new_with_context(engine, component, linker, ctx, plugin_name, runtime)
+        let instance_id = plugin_name.clone();
+        let ctx = Self::build_context_from_services(&services, &plugin_name, &instance_id)?;
+        Self::new_with_context(
+            engine,
+            component,
+            linker,
+            ctx,
+            plugin_name,
+            runtime,
+            instance_id,
+        )
     }
 
     /// Create a WIT component from raw bytes with a pre-built host context.
@@ -310,7 +326,16 @@ impl WitPluginComponent {
             wasmtime::component::HasSelf<crate::wit_host::WitPluginHost>,
         >(&mut linker, |state: &mut WitHostState| &mut state.host)
         .map_err(|e| format!("linker setup: {e}"))?;
-        Self::new_with_context(engine, component, linker, ctx, plugin_name, runtime)
+        let instance_id = plugin_name.clone();
+        Self::new_with_context(
+            engine,
+            component,
+            linker,
+            ctx,
+            plugin_name,
+            runtime,
+            instance_id,
+        )
     }
 
     /// Create a WIT component from pre-compiled engine/component/linker
@@ -324,9 +349,11 @@ impl WitPluginComponent {
         ctx: Arc<crate::wit_host::WitHostContext>,
         plugin_name: String,
         runtime: WasmRuntimeConfig,
+        instance_id: String,
     ) -> Result<Self, String> {
         use crate::plugin_abi::wit_abi as wit;
-        let host = crate::wit_host::WitPluginHost::new(ctx, plugin_name.clone());
+        let host_instance_id = instance_id.clone();
+        let host = crate::wit_host::WitPluginHost::new(ctx.clone(), plugin_name.clone(), instance_id);
         let memory_bytes = runtime.max_memory_mb.max(1).saturating_mul(1024 * 1024);
         let limits = wasmtime::StoreLimitsBuilder::new()
             .memory_size(memory_bytes)
@@ -355,6 +382,12 @@ impl WitPluginComponent {
             description: "WIT component plugin".to_string(),
         };
         Ok(Self {
+            engine,
+            component_definition: component,
+            linker,
+            context: ctx,
+            max_memory_bytes: memory_bytes,
+            instance_id: host_instance_id,
             store,
             component: component_handle,
             info,
@@ -364,24 +397,68 @@ impl WitPluginComponent {
         })
     }
 
-    fn reset_fuel(&mut self) -> Result<(), String> {
+    /// Discard the current Store/instance pair and create a completely new
+    /// component instance from the same compiled component. Wasmtime component
+    /// instances are tied to their Store; once a Store reports an instance-entry
+    /// failure, retaining the old generated handle is unsafe.
+    fn recreate_instance(&mut self) -> Result<(), String> {
+        use crate::plugin_abi::wit_abi as wit;
+        // The old component may have registered host handlers before becoming
+        // corrupted. Remove only this generation's registrations before the
+        // replacement is initialized; never clear another plugin's handlers.
+        let old_host = crate::wit_host::WitPluginHost::new(
+            Arc::clone(&self.context),
+            self.plugin_name.clone(),
+            self.instance_id.clone(),
+        );
+        old_host.clear_instance_registrations();
+        let host = crate::wit_host::WitPluginHost::new(
+            Arc::clone(&self.context),
+            self.plugin_name.clone(),
+            self.instance_id.clone(),
+        );
+        let limits = wasmtime::StoreLimitsBuilder::new()
+            .memory_size(self.max_memory_bytes)
+            .instances(128)
+            .memories(128)
+            .tables(128)
+            .trap_on_grow_failure(true)
+            .build();
+        let host_state = WitHostState { host, limits };
+        let mut store = wasmtime::Store::new(&self.engine, host_state);
+        store.limiter(|state| &mut state.limits);
         if self.fuel_per_call > 0 {
-            self.store
+            store
                 .set_fuel(self.fuel_per_call)
-                .map_err(|e| format!("reset plugin fuel: {e}"))?;
+                .map_err(|e| format!("set recovered plugin fuel: {e}"))?;
         }
+        let instance = self
+            .linker
+            .instantiate(&mut store, &self.component_definition)
+            .map_err(|e| format!("recreate component instance: {e}"))?;
+        let component = wit::PhiraPluginV3::new(&mut store, &instance)
+            .map_err(|e| format!("recreate component handle: {e}"))?;
+        // Drop the old generated handle while its old Store is still alive;
+        // only then replace the Store.  The new handle is already bound to the
+        // freshly-created Store above.
+        self.component = component;
+        self.store = store;
+        self.initialized = false;
         Ok(())
     }
 
-    pub fn call_init(&mut self) -> Result<(), String> {
-        tracing::info!(plugin = %self.info.name, "call_init");
+    fn is_instance_corruption(error: &str) -> bool {
+        error.contains("cannot enter component instance")
+            || error.contains("cannot enter instance")
+    }
+
+    fn call_init_once(&mut self) -> Result<(), String> {
         self.reset_fuel()?;
         let result = self
             .component
             .call_init(&mut self.store)
             .map_err(|e| format!("component init trap: {e}"))?;
         result.map_err(|e| format!("component init returned error: {e}"))?;
-
         self.reset_fuel()?;
         let reported = self
             .component
@@ -395,6 +472,28 @@ impl WitPluginComponent {
         };
         self.initialized = true;
         Ok(())
+    }
+
+    fn reset_fuel(&mut self) -> Result<(), String> {
+        if self.fuel_per_call > 0 {
+            self.store
+                .set_fuel(self.fuel_per_call)
+                .map_err(|e| format!("reset plugin fuel: {e}"))?;
+        }
+        Ok(())
+    }
+
+    pub fn call_init(&mut self) -> Result<(), String> {
+        tracing::info!(plugin = %self.info.name, "call_init");
+        match self.call_init_once() {
+            Ok(()) => Ok(()),
+            Err(error) if Self::is_instance_corruption(&error) => {
+                tracing::warn!(plugin = %self.info.name, %error, "discarding corrupted Wasmtime component instance");
+                self.recreate_instance()?;
+                self.call_init_once()
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub fn call_cleanup(&mut self) {
@@ -540,10 +639,19 @@ impl WitPluginComponent {
                 chart_name: chart_name.clone(),
             }),
         };
-        let result = self
-            .component
-            .call_on_event(&mut self.store, &wit_event)
-            .map_err(|e| format!("component on_event: {e}"))?;
+        let result = match self.component.call_on_event(&mut self.store, &wit_event) {
+            Ok(result) => result,
+            Err(error) if Self::is_instance_corruption(&error.to_string()) => {
+                let error = error.to_string();
+                tracing::warn!(plugin = %self.info.name, %error, "recovering Wasmtime instance after on_event failure");
+                self.recreate_instance()?;
+                self.call_init_once()?;
+                self.component
+                    .call_on_event(&mut self.store, &wit_event)
+                    .map_err(|e| format!("component on_event after instance recovery: {e}"))?
+            }
+            Err(e) => return Err(format!("component on_event: {e}")),
+        };
         match result {
             Ok(handled) => Ok(if handled { 1 } else { 0 }),
             Err(e) => Err(format!("component on_event returned error: {e}")),
@@ -561,10 +669,19 @@ impl WitPluginComponent {
             .iter()
             .map(|v| crate::wit_host::json_value_to_wit(v))
             .collect();
-        let result = self
-            .component
-            .call_on_api(&mut self.store, method, &wit_args)
-            .map_err(|e| format!("component on_api: {e}"))?;
+        let result = match self.component.call_on_api(&mut self.store, method, &wit_args) {
+            Ok(result) => result,
+            Err(error) if Self::is_instance_corruption(&error.to_string()) => {
+                let error = error.to_string();
+                tracing::warn!(plugin = %self.info.name, %error, "recovering Wasmtime instance after on_api failure");
+                self.recreate_instance()?;
+                self.call_init_once()?;
+                self.component
+                    .call_on_api(&mut self.store, method, &wit_args)
+                    .map_err(|e| format!("component on_api after instance recovery: {e}"))?
+            }
+            Err(e) => return Err(format!("component on_api: {e}")),
+        };
         match result {
             types::ApiResult::Ok(value) => Ok(crate::wit_host::wit_json_value_to_serde(&value)),
             types::ApiResult::Error(e) => Err(e),

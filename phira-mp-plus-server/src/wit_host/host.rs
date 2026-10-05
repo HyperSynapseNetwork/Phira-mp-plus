@@ -63,7 +63,7 @@ pub struct WitHostContext {
     /// also inserted here so PluginManager can dispatch to them.
     pub services_handlers: Option<Arc<Mutex<HashMap<String, api::PluginApiHandler>>>>,
     /// Tracks method name ownership for the shared handler registry.
-    /// Maps plugin_name -> list of handler methods owned by that plugin.
+    /// Maps loaded instance id -> list of handler methods owned by that instance.
     /// Used by PluginManager::remove_plugin to clean up stale handlers.
     pub handler_owners: Option<Arc<Mutex<HashMap<String, Vec<String>>>>>,
     /// Async dispatch function that forwards an API call to this plugin via
@@ -85,15 +85,40 @@ pub struct RegisteredHandler {
 pub struct WitPluginHost {
     pub(crate) ctx: Arc<WitHostContext>,
     pub(crate) plugin_name: String,
+    /// Stable loaded-instance identity used for resource ownership/cleanup.
+    pub(crate) instance_id: String,
 }
 
 impl WitPluginHost {
-    pub fn new(ctx: Arc<WitHostContext>, plugin_name: String) -> Self {
-        Self { ctx, plugin_name }
+    pub fn new(ctx: Arc<WitHostContext>, plugin_name: String, instance_id: String) -> Self {
+        Self { ctx, plugin_name, instance_id }
     }
 
     pub fn name(&self) -> &str {
         &self.plugin_name
+    }
+
+    /// Remove registrations owned by this exact loaded instance. This is used
+    /// during Wasmtime instance recovery so a fresh init can recreate handlers
+    /// without colliding with stale registrations from the discarded instance.
+    pub(crate) fn clear_instance_registrations(&self) {
+        let Some(ref owners) = self.ctx.handler_owners else {
+            return;
+        };
+        let methods = owners
+            .lock()
+            .ok()
+            .and_then(|mut map| map.remove(&self.instance_id));
+        let Some(methods) = methods else {
+            return;
+        };
+        if let Some(ref shared) = self.ctx.services_handlers {
+            if let Ok(mut shared) = shared.lock() {
+                for method in methods {
+                    shared.remove(&format!("{}.{}", self.plugin_name, method));
+                }
+            }
+        }
     }
 
     pub fn require_capability(&self, capability: &str) -> Result<(), String> {

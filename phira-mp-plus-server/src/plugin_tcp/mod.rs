@@ -109,7 +109,8 @@ pub enum PluginTcpCommand {
         reply: SyncReply<String>,
     },
     RemovePlugin {
-        plugin_id: String,
+        /// Exact loaded-instance identity (`stable_id@generation`).
+        plugin_instance_id: String,
         reply: SyncReply<()>,
     },
     /// Query aggregated per-plugin TCP metrics (pending/dropped events,

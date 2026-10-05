@@ -165,6 +165,14 @@ impl BenchmarkHarness {
                 .map(|s| s.name.clone())
                 .unwrap_or_else(|| uid.to_string());
             let deadline = Instant::now() + Duration::from_secs(30);
+            let connection = self
+                .state
+                .users
+                .read()
+                .await
+                .get(&uid)
+                .cloned()
+                .ok_or_else(|| "benchmark user disappeared before AddUser".to_string())?;
             if let Err(e) = self
                 .state
                 .room_commands
@@ -173,7 +181,7 @@ impl BenchmarkHarness {
                     &room_id,
                     uid,
                     &name,
-                    None,
+                    Some(connection),
                     false,
                     deadline,
                     None,
