@@ -189,6 +189,8 @@ impl RoomState {
             cycle: self.control.cycle,
             tournament: self.control.tournament,
             host: self.control.host_id,
+            phira_api_endpoint: self.control.phira_api_endpoint.clone(),
+            admin_start_pending: self.control.admin_start_pending,
             system_host: self.control.system_host,
             hidden: self.control.hidden,
             live: self.live,

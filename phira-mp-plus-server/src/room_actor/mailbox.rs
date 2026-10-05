@@ -553,6 +553,8 @@ mod tests {
             cycle: false,
             tournament: false,
             host: None,
+            phira_api_endpoint: None,
+            admin_start_pending: false,
             system_host: false,
             hidden: false,
             live: false,
